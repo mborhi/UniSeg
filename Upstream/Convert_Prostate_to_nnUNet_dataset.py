@@ -21,16 +21,20 @@ def NiiDataWrite(path, prediction_final, spacing, origin, direction):
     img.SetDirection(direction)
     sitk.WriteImage(img, path)
 
-data_path = "/data/userdisk0/ywye/nnUNet_raw/nnUNet_raw_data/Processed_data_nii/"
-out_path = "./Task020_Prostate/"
+data_path = os.path.join(os.environ['nnUNet_raw_data_base'], 'Prostate')
+# data_path = "/data/userdisk0/ywye/nnUNet_raw/nnUNet_raw_data/Processed_data_nii/"
+out_path = os.path.join(os.environ['nnUNet_raw_data_base'], "Task020_Prostate")
 if os.path.exists(out_path):
     shutil.rmtree(out_path)
 os.makedirs(out_path)
 image_path = os.path.join(out_path, "imagesTr")
 label_path = os.path.join(out_path, "labelsTr")
-os.makedirs(image_path)
-os.makedirs(label_path)
-os.makedirs(os.path.join(out_path, "imagesTs"))
+if not os.path.exists(image_path):
+    os.makedirs(image_path)
+if not os.path.exists(label_path):
+    os.makedirs(label_path)
+if not os.path.exists(os.path.join(out_path, "imagesTs")):
+    os.makedirs(os.path.join(out_path, "imagesTs"))
 
 index = 0
 sub_dataset = ["BIDMC", "BMC", "HK", "I2CVB", "RUNMC", "UCL"]

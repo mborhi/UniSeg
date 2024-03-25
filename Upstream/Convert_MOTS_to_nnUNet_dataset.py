@@ -3,24 +3,36 @@ import shutil
 from batchgenerators.utilities.file_and_folder_operations import *
 from collections import OrderedDict
 from tqdm import tqdm
-data_path = "/media/userdisk1/yeyiwen/nnUNetFrame/DATASET/nnUNet_raw/nnUNet_raw_data/"
+
+# "/data/uniseg/MOTS_formatted" => -v /media/.../uniseg:/data
+print(os.listdir(os.environ['nnUNet_raw_data_base']))
+data_path = os.path.join(os.environ['nnUNet_raw_data_base'], 'MOTS_formatted')
+# data_path = "/media/userdisk1/yeyiwen/nnUNetFrame/DATASET/nnUNet_raw/nnUNet_raw_data/"
+# sub_dataset_name = ["Task32_HepaticVessel", "Task33_Pancreas", "Task34_Colon", "Task35_Lung", "Task36_Spleen"]
 sub_dataset_name = ["Task30_Liver", "Task31_Kidney", "Task32_HepaticVessel", "Task33_Pancreas", "Task34_Colon", "Task35_Lung", "Task36_Spleen"]
-out_path = "./Task091_MOTS/"
-if os.path.exists(out_path):
+# sub_dataset_name = ["Task30_Liver", "Task31_Kidney"]
+out_path = os.path.join(os.environ['nnUNet_raw_data_base'], "Task091_MOTS")
+if not os.path.exists(out_path):
     shutil.rmtree(out_path)
-os.makedirs(out_path)
+    # os.makedirs(out_path)
+if not os.path.exists(out_path):
+    os.makedirs(out_path)
 out_image_path = os.path.join(out_path, "imagesTr")
 out_label_path = os.path.join(out_path, "labelsTr")
-os.makedirs(out_image_path)
-os.makedirs(out_label_path)
-os.makedirs(os.path.join(out_path, "imagesTs"))
+if not os.path.exists(out_image_path):
+    os.makedirs(out_image_path)
+if not os.path.exists(out_label_path):
+    os.makedirs(out_label_path)
+if not os.path.exists(os.path.join(out_path, "imagesTs")):
+    os.makedirs(os.path.join(out_path, "imagesTs"))
 
 patient_names = []
 for dataset in sub_dataset_name:
     sub_dataset_image_path = os.path.join(data_path, dataset, "imagesTr")
     sub_dataset_label_path = os.path.join(data_path, dataset, "labelsTr")
     for name in tqdm(os.listdir(sub_dataset_image_path)):
-        if name.endswith(".nii.gz"):
+        if name.endswith(".nii.gz") and not os.path.isfile(os.path.join(out_label_path, name)):
+            print(name)
             shutil.copy(os.path.join(sub_dataset_image_path, name), os.path.join(out_image_path, name.replace(".nii.gz", "_0000.nii.gz")))
             shutil.copy(os.path.join(sub_dataset_label_path, name), os.path.join(out_label_path, name))
             patient_names.append(name.replace(".nii.gz", ""))

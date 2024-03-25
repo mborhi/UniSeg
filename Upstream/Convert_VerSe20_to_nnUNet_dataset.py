@@ -117,8 +117,9 @@ def print_unique_labels_and_their_volumes(image: str, print_only_if_vol_smaller_
         else:
             print('k:', k, '\tvol:', volumes[k])
 
-out_path = "./Task037_VerSe20binary/"
-data_path = "/data/userdisk0/ywye/nnUNet_raw/nnUNet_raw_data/VerSe20/"
+out_path = os.path.join(os.environ['nnUNet_raw_data_base'], "Task037_VerSe20binary")
+data_path = os.path.join(os.environ['nnUNet_raw_data_base'], 'VerSe', 'VerSe20')
+# data_path = "/data/userdisk0/ywye/nnUNet_raw/nnUNet_raw_data/VerSe20/"
 if os.path.exists(out_path):
     shutil.rmtree(out_path)
 os.makedirs(out_path, exist_ok=True)
