@@ -427,6 +427,17 @@ class DataLoader3D_UniSeg(SlimDataLoaderBase):
         for name in list(self._data.keys()):
             self.list_of_keys_task[self.task[name[:4]]].append(name)
         print("task_data_list,", [len(i) for i in self.list_of_keys_task])
+        idx = 0
+        while idx < len(self.list_of_keys_task):
+            if len(self.list_of_keys_task[idx]) == 0:
+                self.list_of_keys_task.pop(idx)
+                print("after removal:", [len(j) for j in self.list_of_keys_task])
+            else:
+                idx += 1
+        self.task_num = len(self.list_of_keys_task)
+
+        print("task_data_list,", [len(i) for i in self.list_of_keys_task])
+                
         # need_to_pad denotes by how much we need to pad the data so that if we sample a patch of size final_patch_size
         # (which is what the network will get) these patches will also cover the border of the patients
         self.need_to_pad = (np.array(patch_size) - np.array(final_patch_size)).astype(int)
@@ -467,7 +478,9 @@ class DataLoader3D_UniSeg(SlimDataLoaderBase):
         return data_shape, seg_shape
 
     def generate_train_batch(self, task_pool, epoch_choice_id, lock):
-
+        print('epoch choice id:', epoch_choice_id)
+        if len(epoch_choice_id) > len(self.list_of_keys_task):
+            epoch_choice_id = epoch_choice_id[:len(self.list_of_keys_task)]
         with lock:
             choice_id = np.random.choice(epoch_choice_id)
             task_pool[choice_id] -= 1
@@ -486,6 +499,9 @@ class DataLoader3D_UniSeg(SlimDataLoaderBase):
                     except:
                         pass
 
+        print('choie id', choice_id)
+        print('list of keys task length:', len(self.list_of_keys_task))
+        print('key selection options:', self.list_of_keys_task[choice_id])
         selected_keys = np.random.choice(self.list_of_keys_task[choice_id], self.batch_size, True, None)
         # print(selected_keys, self.batch_size, selected_keys.shape) #2, [2,]
         if choice_id == 9: #BraTS21 4 channel input

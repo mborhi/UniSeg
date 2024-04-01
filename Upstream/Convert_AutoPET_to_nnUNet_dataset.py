@@ -26,7 +26,7 @@ def NiiDataWrite(path, prediction_final, spacing, origin, direction):
 patient_names = []
 
 out_path = os.path.join(os.environ['nnUNet_raw_data_base'], "Task011_AutoPET")
-data_path = os.path.join(os.environ['nnUNet_raw_data_base'], "TCIA_FDG-PET-CT-Lesions_v1", "FDG-PET-CT-Lesions")
+data_path = os.path.join(os.environ['nnUNet_raw_data_base'], "TCIA_FDG-PET-CT-Lesions_v1", "NIFTI-FDG-PET-CT-Lesions")
 
 os.makedirs(out_path, exist_ok=True)
 out_path_image = os.path.join(out_path, "imagesTr")

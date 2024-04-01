@@ -215,7 +215,8 @@ task_name  = "Task097_11task"
 if os.path.exists(task_name):
     shutil.rmtree(task_name)
 os.makedirs(task_name, exist_ok=True)
-root_path = "/erwen_SSD/1T/nnUNet_preprocessed/"
+# root_path = "/erwen_SSD/1T/nnUNet_preprocessed/"
+root_path = os.environ['nnUNet_preprocessed']
 out_path = os.path.join(root_path, task_name)
 out_path_image = os.path.join(out_path, "DoDNetData_plans_stage0")
 out_path_label = os.path.join(out_path, "gt_segmentations")
@@ -223,7 +224,8 @@ out_path_label = os.path.join(out_path, "gt_segmentations")
 os.makedirs(out_path_image, exist_ok=True)
 os.makedirs(out_path_label, exist_ok=True)
 
-sub_datasets = ["Task091_MOTS", "Task037_VerSe20binary", "Task021_BraTS2021", "Task020_Prostate", "Task011_AutoPET"] #
+# sub_datasets = ["Task091_MOTS", "Task037_VerSe20binary", "Task021_BraTS2021", "Task020_Prostate", "Task011_AutoPET"] #
+sub_datasets = ["Task091_MOTS"] #
 dataset_properties_path_list = [os.path.join(root_path, sub_dataset, "dataset_properties.pkl") for sub_dataset in sub_datasets]
 DoDNetPlans_plans_3D_path_list = [os.path.join(root_path, sub_dataset, "DoDNetPlans_plans_3D.pkl") for sub_dataset in sub_datasets]
 json_path_list = [os.path.join(root_path, sub_dataset, "dataset.json") for sub_dataset in sub_datasets]
@@ -242,7 +244,4 @@ for sub_dataset in sub_datasets:
 
     for file in tqdm(os.listdir(source_label)):
         shutil.copyfile(os.path.join(source_label, file), os.path.join(out_path_label, file))
-
-
-
 
