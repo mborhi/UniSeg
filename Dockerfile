@@ -38,13 +38,22 @@ RUN pip install nnUnet && \
     pip install tqdm && \
     pip install SimpleITK
 
+RUN apt-get update && \
+    apt-get upgrade -y && \
+    apt-get install -y git
+
+
 RUN mkdir /output
 RUN mkdir /data
 # Set default working directory
 WORKDIR /workspace
 
-COPY . /workspace
+RUN git clone https://github.com/mborhi/UniSeg.git .
+RUN git checkout test_embedding
 COPY ./Upstream/nnunet /usr/local/lib/python3.8/dist-packages/nnunet
 
 # Define default command
 CMD ["/bin/bash"]
+
+# mount the data folder
+# docker run -v /media/hieu/DATA/data-center/uniseg:/data -it --gpus all uniseg_embedding
