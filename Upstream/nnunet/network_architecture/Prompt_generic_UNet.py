@@ -89,7 +89,9 @@ class UniSeg_model(Generic_UNet):
                  conv_kernel_sizes=None,
                  upscale_logits=False, convolutional_pooling=False, convolutional_upsampling=False,
                  max_num_features=None, basic_block=ConvDropoutNormNonlin,
-                 seg_output_use_bias=False):
+                 seg_output_use_bias=False, 
+                 contrastive_loss=True
+                ):
         super(Generic_UNet, self).__init__()
         print("training patch size", patch_size)
         self.num_class =  task_total_number
@@ -118,6 +120,7 @@ class UniSeg_model(Generic_UNet):
         self.num_classes = num_classes
         self.final_nonlin = final_nonlin
         self._deep_supervision = deep_supervision
+        self._contrastive_loss = contrastive_loss
         self.do_ds = deep_supervision
 
         if conv_op == nn.Conv2d:
@@ -316,6 +319,7 @@ class UniSeg_model(Generic_UNet):
                 x = self.td[d](x)
 
         x = self.conv_blocks_context[-1](x)
+        x_encoded = x.detach().clone().to(device=x.device)
         # print(now_prompt.size())
         now_prompt = self.intermedia_prompt.repeat(bs,1,1,1,1)
         dynamic_prompt = self.fusion_layer(torch.cat([x, now_prompt], dim=1))
@@ -330,7 +334,11 @@ class UniSeg_model(Generic_UNet):
             x = self.conv_blocks_localization[u](x)
             seg_outputs.append(self.final_nonlin(self.seg_outputs[u](x)))
 
-
+        if self._contrastive_loss and self.do_ds and self._deep_supervision:
+            return (list([seg_outputs[-1]] + [i(j) for i, j in
+                                              zip(list(self.upscale_logits_ops)[::-1], seg_outputs[:-1][::-1])]), 
+                    x_encoded, 
+                    task_prompt)
         if self._deep_supervision and self.do_ds:
             return list([seg_outputs[-1]] + [i(j) for i, j in
                                               zip(list(self.upscale_logits_ops)[::-1], seg_outputs[:-1][::-1])])
