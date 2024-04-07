@@ -24,6 +24,7 @@ from nnunet.inference.segmentation_export import save_segmentation_nifti_from_so
 from tqdm import tqdm
 from nnunet.training.data_augmentation.data_augmentation_moreDA import get_moreDA_augmentation_uniseg
 from nnunet.training.loss_functions.deep_supervision import MultipleOutputLoss2
+from nnunet.training.loss_functions.contrastive_loss import TaskPromptLoss
 from nnunet.network_architecture.neural_network import SegmentationNetwork
 from nnunet.training.dataloading.dataset_loading import unpack_dataset
 class UniSeg_Trainer(nnUNetTrainerV2):
@@ -120,6 +121,7 @@ class UniSeg_Trainer(nnUNetTrainerV2):
             self.ds_loss_weights = weights
             # now wrap the loss
             self.loss = MultipleOutputLoss2(self.loss, self.ds_loss_weights)
+            self.tp_loss = TaskPromptLoss(scaling_weight=0.1)
             ################# END ###################
 
             self.folder_with_preprocessed_data = join(self.dataset_directory, self.plans['data_identifier'] +
@@ -196,14 +198,16 @@ class UniSeg_Trainer(nnUNetTrainerV2):
 
         if self.fp16:
             with autocast():
-                output = self.network(data, task_id)
+                # output = self.network(data, task_id)
+                output, x_encoded, task_prompt = self.network(data, task_id)
                 assert len(output) > 1
                 for out in range(len(output)):
                     output[out] = output[out][:, :self.task_class[int(task_id[0])]]
 
                 del data
                 l = self.loss(output, target)
-
+                task_prompt_loss = self.tp_loss(x_encoded, task_prompt, target)
+                l += task_prompt_loss
             if do_backprop:
                 self.amp_grad_scaler.scale(l).backward()
                 self.amp_grad_scaler.unscale_(self.optimizer)
