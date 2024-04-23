@@ -499,9 +499,9 @@ class DataLoader3D_UniSeg(SlimDataLoaderBase):
                     except:
                         pass
 
-        print('choie id', choice_id)
-        print('list of keys task length:', len(self.list_of_keys_task))
-        print('key selection options:', self.list_of_keys_task[choice_id])
+        print('choice id', choice_id)
+        # print('list of keys task length:', len(self.list_of_keys_task))
+        # print('key selection options:', self.list_of_keys_task[choice_id])
         selected_keys = np.random.choice(self.list_of_keys_task[choice_id], self.batch_size, True, None)
         # print(selected_keys, self.batch_size, selected_keys.shape) #2, [2,]
         if choice_id == 9: #BraTS21 4 channel input

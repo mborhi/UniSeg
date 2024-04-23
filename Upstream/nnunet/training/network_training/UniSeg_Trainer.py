@@ -36,7 +36,8 @@ class UniSeg_Trainer(nnUNetTrainerV2):
         self.task_class = {0: 3, 1: 3, 2: 3, 3: 3, 4: 2, 5: 2, 6: 2, 7: 2, 8: 2, 9: 4, 10: 2}
         print("task_class", self.task_class)
         self.visual_epoch = -1
-        self.total_task_num = 11
+        # Fix total tasks num to that of MOTS dataset
+        self.total_task_num = 7
         self.num_batches_per_epoch = int(50 * self.total_task_num)
         print("num batches per epoch:", self.num_batches_per_epoch)
         print("total task num", self.total_task_num)
@@ -47,6 +48,9 @@ class UniSeg_Trainer(nnUNetTrainerV2):
         shutil.copytree(os.path.join(dirname.split("nnunet")[0], "nnunet"), os.path.join(self.output_folder, "code"))
         print("copy code successfully!")
         self.task_index = [0 for _ in range(self.total_task_num)]
+        # Modify batch size
+        # self.plans['plans_per_stage'][1]['batch_size'] = 8
+        # self.batch_size = 2
 
     def initialize_network(self):
         """
@@ -126,10 +130,7 @@ class UniSeg_Trainer(nnUNetTrainerV2):
                                                       "_stage%d" % self.stage)
             if training:
                 self.dl_tr, self.dl_val = self.get_basic_generators()
-                if self.unpack_data:
-                    print("unpacking dataset")
-                    unpack_dataset(self.folder_with_preprocessed_data)
-                    print("done")
+                if self.unpack_data:6
                 else:
                     print(
                         "INFO: Not unpacking data! Training may be slow due to that. Pray you are not using 2d or you "
