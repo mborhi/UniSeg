@@ -336,4 +336,52 @@ class UniSeg_model(Generic_UNet):
                                               zip(list(self.upscale_logits_ops)[::-1], seg_outputs[:-1][::-1])])
         else:
             return seg_outputs[-1]
+    
+    def forward_with_extraction(self, x, task_id):
+        """
+        Standard forward function, returns the task_prompt as well:
+        ```
+        task_prompt = torch.index_select(self.fusion_layer(torch.cat([x, now_prompt], dim=1)), 1, task_id[0])
+        ```
+        This method always returns the outputs of the Decoder as well, even with `self._deep_supervision` is False
+        Returns:
+        -------
+        torch.Tensor([batch_size, len(task_id[0]), 4, 6, 6])
+        """
+        skips = []
+        seg_outputs = []
+
+        bs = x.size()[0]
+        for d in range(len(self.conv_blocks_context) - 1):
+            x = self.conv_blocks_context[d](x)
+            skips.append(x)
+            # print(x.size())
+            if not self.convolutional_pooling:
+                x = self.td[d](x)
+
+        x = self.conv_blocks_context[-1](x)
+        # print(now_prompt.size())
+        now_prompt = self.intermedia_prompt.repeat(bs,1,1,1,1)
+        dynamic_prompt = self.fusion_layer(torch.cat([x, now_prompt], dim=1))
+        task_prompt = torch.index_select(dynamic_prompt, 1, task_id[0])
+
+        x = torch.cat([x, task_prompt], dim=1)
+        # print(x.size())
+
+        for u in range(len(self.tu)):
+            x = self.tu[u](x)
+            x = torch.cat((x, skips[-(u + 1)]), dim=1)
+            x = self.conv_blocks_localization[u](x)
+            seg_outputs.append(self.final_nonlin(self.seg_outputs[u](x)))
+
+
+        return (list([seg_outputs[-1]] + [i(j) for i, j in zip(list(self.upscale_logits_ops)[::-1], 
+                                                               seg_outputs[:-1][::-1])]), 
+                task_prompt)
+
+        if self._deep_supervision and self.do_ds:
+            return list([seg_outputs[-1]] + [i(j) for i, j in
+                                              zip(list(self.upscale_logits_ops)[::-1], seg_outputs[:-1][::-1])])
+        else:
+            return seg_outputs[-1]
 
