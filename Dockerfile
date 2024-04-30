@@ -57,3 +57,4 @@ CMD ["/bin/bash"]
 
 # mount the data folder
 # docker run --shm-size=10gb -v /media/hieu/DATA/data-center/uniseg:/data -it --gpus all uniseg_embedding
+# docker run --shm-size=10gb -v /mnt/16T/data-center/uniseg:/data -it --gpus all uniseg
