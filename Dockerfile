@@ -56,4 +56,4 @@ COPY ./Upstream/nnunet /usr/local/lib/python3.8/dist-packages/nnunet
 CMD ["/bin/bash"]
 
 # mount the data folder
-# docker run -v /media/hieu/DATA/data-center/uniseg:/data -it --gpus all uniseg_embedding
+# docker run --shm-size=10gb -v /media/hieu/DATA/data-center/uniseg:/data -it --gpus all uniseg_embedding
