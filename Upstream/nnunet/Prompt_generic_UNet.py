@@ -333,7 +333,7 @@ class UniSeg_model(Generic_UNet):
             seg_outputs.append(self.final_nonlin(self.seg_outputs[u](x)))
 
         if get_prompt:
-            return seg_outputs[-1], now_prompt.detach().clone(), dynamic_prompt.detach().clone(), task_prompt.detach().clone(), temp_x
+            return seg_outputs[-1], self.intermedia_prompt.detach().clone(), dynamic_prompt.detach().clone(), task_prompt.detach().clone(), temp_x
 
         if self._deep_supervision and self.do_ds:
             return list([seg_outputs[-1]] + [i(j) for i, j in
