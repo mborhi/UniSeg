@@ -303,7 +303,7 @@ class UniSeg_model(Generic_UNet):
             # self.apply(print_module_training_status)
 
 
-    def forward(self, x, task_id):
+    def forward(self, x, task_id, get_prompt=False):
         skips = []
         seg_outputs = []
 
@@ -320,7 +320,8 @@ class UniSeg_model(Generic_UNet):
         now_prompt = self.intermedia_prompt.repeat(bs,1,1,1,1)
         dynamic_prompt = self.fusion_layer(torch.cat([x, now_prompt], dim=1))
         task_prompt = torch.index_select(dynamic_prompt, 1, task_id[0])
-
+        if get_prompt:
+            temp_x = x.detach().clone()
         x = torch.cat([x, task_prompt], dim=1)
         # print(x.size())
 
@@ -330,6 +331,8 @@ class UniSeg_model(Generic_UNet):
             x = self.conv_blocks_localization[u](x)
             seg_outputs.append(self.final_nonlin(self.seg_outputs[u](x)))
 
+        if get_prompt:
+            return seg_outputs[-1], self.intermedia_prompt.detach().clone(), dynamic_prompt.detach().clone(), task_prompt.detach().clone(), temp_x
 
         if self._deep_supervision and self.do_ds:
             return list([seg_outputs[-1]] + [i(j) for i, j in

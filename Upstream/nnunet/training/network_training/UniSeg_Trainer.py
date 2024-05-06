@@ -160,7 +160,7 @@ class UniSeg_Trainer(nnUNetTrainerV2):
             self.print_to_log_file('self.was_initialized is True, not running self.initialize again')
         self.was_initialized = True
 
-    def run_iteration(self, data_generator, do_backprop=True, run_online_evaluation=False):
+    def run_iteration(self, data_generator, do_backprop=True, run_online_evaluation=False, get_prompt=False):
         """
         gradient clipping improves training stability
 
@@ -196,7 +196,10 @@ class UniSeg_Trainer(nnUNetTrainerV2):
 
         if self.fp16:
             with autocast():
-                output = self.network(data, task_id)
+                # output = self.network(data, task_id)
+                output = self.network(data, task_id,get_prompt=get_prompt)
+                if get_prompt:
+                    return *output, [item.detach().clone() for item in target]
                 assert len(output) > 1
                 for out in range(len(output)):
                     output[out] = output[out][:, :self.task_class[int(task_id[0])]]
