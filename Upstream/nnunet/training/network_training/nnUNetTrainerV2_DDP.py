@@ -371,13 +371,18 @@ class nnUNetTrainerV2_DDP(nnUNetTrainerV2):
 
                         tbar.set_postfix(loss=l)
                         train_losses_epoch.append(l)
+                        break # NOTE
             else:
                 for _ in range(self.num_batches_per_epoch):
                     l = self.run_iteration(self.tr_gen, True)
                     train_losses_epoch.append(l)
+                    break # NOTE
 
             self.all_tr_losses.append(np.mean(train_losses_epoch))
             self.print_to_log_file("train loss : %.4f" % self.all_tr_losses[-1])
+            # NOTE Add GMM claculations here
+            self.network.init_gmms()
+            self.network.train_gmms()
 
             with torch.no_grad():
                 # validation with train=False

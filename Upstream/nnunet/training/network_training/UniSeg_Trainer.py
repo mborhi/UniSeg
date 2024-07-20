@@ -14,7 +14,7 @@ from nnunet.utilities.nd_softmax import softmax_helper
 from torch import nn
 import SimpleITK as sitk
 import shutil
-from nnunet.network_architecture.Prompt_generic_UNet import UniSeg_model
+from nnunet.network_architecture.Prompt_generic_UNet import UniSeg_model, TaskPromptFeatureExtractor
 from nnunet.training.dataloading.dataset_loading import DataLoader3D_UniSeg
 from batchgenerators.utilities.file_and_folder_operations import *
 from multiprocessing import Pool
@@ -26,6 +26,9 @@ from nnunet.training.data_augmentation.data_augmentation_moreDA import get_moreD
 from nnunet.training.loss_functions.deep_supervision import MultipleOutputLoss2
 from nnunet.network_architecture.neural_network import SegmentationNetwork
 from nnunet.training.dataloading.dataset_loading import unpack_dataset
+from nnunet.training.loss_functions.dist_match_loss import DynamicDistMatchingLoss
+from nnunet.utilities.sep import get_task_set
+
 class UniSeg_Trainer(nnUNetTrainerV2):
     def __init__(self, plans_file, fold, output_folder=None, dataset_directory=None, batch_dice=True, stage=None,
                  unpack_data=True, deterministic=True, fp16=False):
@@ -34,6 +37,26 @@ class UniSeg_Trainer(nnUNetTrainerV2):
         self.max_num_epochs = 1000
         self.task = {"live":0, "kidn":1, "hepa":2, "panc":3, "colo":4, "lung":5, "sple":6, "sub-":7, "pros":8, "BraT":9, "PETC": 10}
         self.task_class = {0: 3, 1: 3, 2: 3, 3: 3, 4: 2, 5: 2, 6: 2, 7: 2, 8: 2, 9: 4, 10: 2}
+        self.task_id_class_lst_mapping = {
+            0: [0, 1, 2], 
+            1: [0, 3, 4], 
+            2: [0, 5, 6], 
+            3: [0, 7, 8], 
+            4: [0, 9], 
+            5: [0, 10], 
+            6: [0, 11], 
+            7: [0, 12], 
+            8: [0, 13], 
+            9: [0, 14, 15, 16, 17], 
+            10: [0, 18]
+        }
+        self.class_lst_task_id_mapping = {}
+        self.class_lst_to_std_mapping = {}
+        for task_id, cls_lst in self.task_id_class_lst_mapping.items():
+            for i, cls in enumerate(cls_lst):
+                self.class_lst_task_id_mapping[cls] = task_id
+                self.class_lst_to_std_mapping[cls] = i
+                
         print("task_class", self.task_class)
         self.visual_epoch = -1
         self.total_task_num = 11
@@ -70,20 +93,29 @@ class UniSeg_Trainer(nnUNetTrainerV2):
             conv_op = nn.Conv2d
             dropout_op = nn.Dropout2d
             norm_op = nn.InstanceNorm2d
-
+        # TODO: change last layer nonlin to identity
         norm_op_kwargs = {'eps': 1e-5, 'affine': True}
         dropout_op_kwargs = {'p': 0, 'inplace': True}
         net_nonlin = nn.LeakyReLU
         net_nonlin_kwargs = {'negative_slope': 1e-2, 'inplace': True}
-        self.network = UniSeg_model(self.patch_size, self.total_task_num, [1, 2, 4], self.base_num_features, self.num_classes,
+        self.uniseg_network = UniSeg_model(self.patch_size, self.total_task_num, [1, 2, 4], self.base_num_features, self.num_classes,
                                     len(self.net_num_pool_op_kernel_sizes),
                                     self.conv_per_stage, 2, conv_op, norm_op, norm_op_kwargs, dropout_op,
                                     dropout_op_kwargs,
                                     net_nonlin, net_nonlin_kwargs, True, False, lambda x: x, InitWeights_He(1e-2),
                                     self.net_num_pool_op_kernel_sizes, self.net_conv_kernel_sizes, False, True, True)
         if torch.cuda.is_available():
+            self.uniseg_network.cuda()
+        # self.network.inference_apply_nonlin = softmax_helper
+        self.uniseg_network.inference_apply_nonlin = lambda x: x
+
+        self.network = TaskPromptFeatureExtractor(feature_space_dim=1, feature_extractor=self.uniseg_network, num_tasks=19, queue_size=500, momentum=0.999)
+        if torch.cuda.is_available():
             self.network.cuda()
-        self.network.inference_apply_nonlin = softmax_helper
+            self.network.dynamic_dist.means = self.network.dynamic_dist.means.cuda()
+            self.network.dynamic_dist.vars = self.network.dynamic_dist.vars.cuda()
+        self.distance_bounds = self.network.get_distance_bounds()
+        print(f"Component location minimum separation: {self.distance_bounds} ")
 
     def initialize(self, training=True, force_load_plans=False):
         """
@@ -119,7 +151,9 @@ class UniSeg_Trainer(nnUNetTrainerV2):
             weights = weights / weights.sum()
             self.ds_loss_weights = weights
             # now wrap the loss
-            self.loss = MultipleOutputLoss2(self.loss, self.ds_loss_weights)
+            # self.loss = MultipleOutputLoss2(self.loss, self.ds_loss_weights)
+            # self.loss = MultipleOutputLoss2(self.loss, self.ds_loss_weights)
+            
             ################# END ###################
 
             self.folder_with_preprocessed_data = join(self.dataset_directory, self.plans['data_identifier'] +
@@ -153,6 +187,7 @@ class UniSeg_Trainer(nnUNetTrainerV2):
                 pass
 
             self.initialize_network()
+            self.loss = DynamicDistMatchingLoss(self.distance_bounds) # NOTE
             self.initialize_optimizer_and_scheduler()
 
             assert isinstance(self.network, (SegmentationNetwork, nn.DataParallel))
@@ -194,21 +229,51 @@ class UniSeg_Trainer(nnUNetTrainerV2):
 
         self.optimizer.zero_grad()
 
+        # 1. Use hook to get encoded input
+        # 2. Estimate distribution params, and update
+        # 3. feature space extraction (w/ upsace) for each task present in the mini-batch
+        # 4. Compute loss
+        # 5. backward
+
         if self.fp16:
             with autocast():
                 # output = self.network(data, task_id)
-                output = self.network(data, task_id,get_prompt=get_prompt)
+                tc_inds = self.task_id_class_lst_mapping[int(task_id[0])]
+                output = self.network(data, task_id, tc_inds)
                 if get_prompt:
                     return *output, [item.detach().clone() for item in target]
-                assert len(output) > 1
-                for out in range(len(output)):
-                    output[out] = output[out][:, :self.task_class[int(task_id[0])]]
+                
+                output, mus, sigs = output
+                
+                # make extractions 
+                extractions = [get_task_set(output, target[0], c) for c in range(self.task_class[int(task_id[0])])]
+
+
+                # Check that each tc_ind has a non-empty list; if one does, remove it and the tc_ind
+                idx = 0
+                while idx < len(tc_inds):
+                    if len(extractions[idx]) == 0:
+                        _ = extractions.pop(idx)
+                        _ = tc_inds.pop(idx)
+                    else:
+                        idx += 1
+
+                # assert len(output) > 1
+                # for out in range(len(output)):
+                #     output[out] = output[out][:, :self.task_class[int(task_id[0])]]
 
                 del data
-                l = self.loss(output, target)
+                # l = self.loss(output, target)
+                l = self.loss(extractions, mus, sigs, tc_inds)
+
+                # TODO make method of network; features = network output
+                # Updated Queues
+                # pick random element from extraction 
+                self.network.update_queues(extractions, tc_inds)
 
             if do_backprop:
-                self.amp_grad_scaler.scale(l).backward()
+                # self.amp_grad_scaler.scale(l).backward(retain_graph=True) # NOTE
+                self.amp_grad_scaler.scale(l).backward(retain_graph=False) # NOTE
                 self.amp_grad_scaler.unscale_(self.optimizer)
                 torch.nn.utils.clip_grad_norm_(self.network.parameters(), 12)
                 self.amp_grad_scaler.step(self.optimizer)
@@ -217,7 +282,15 @@ class UniSeg_Trainer(nnUNetTrainerV2):
             pass
 
         if run_online_evaluation:
-            self.run_online_evaluation(output, target)
+            # train GMMs
+            if not self.network.gmm_fitted:
+                self.network.init_gmms()
+                self.network.train_gmms()
+            # segment output
+            output_segmentation = self.network.segment(output)
+            std_otuput_segmentation = self.network.standardize_segmentation(output_segmentation, self.class_lst_to_std_mapping)
+            # wrap in lists
+            self.run_online_evaluation([std_otuput_segmentation], target)
 
         del target
 
@@ -248,8 +321,8 @@ class UniSeg_Trainer(nnUNetTrainerV2):
         """
         if debug=True then the temporary files generated for postprocessing determination will be kept
         """
-        ds = self.network.do_ds
-        self.network.do_ds = False
+        ds = self.uniseg_network.do_ds
+        self.uniseg_network.do_ds = False
 
         current_mode = self.network.training
         self.network.eval()
@@ -411,5 +484,5 @@ class UniSeg_Trainer(nnUNetTrainerV2):
 
         self.network.train(current_mode)
 
-        self.network.do_ds = ds
+        self.uniseg_network.do_ds = ds
 

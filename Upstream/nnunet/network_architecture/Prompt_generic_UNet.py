@@ -6,7 +6,126 @@ from nnunet.network_architecture.initialization import InitWeights_He
 import torch.nn.functional as F
 from nnunet.network_architecture.generic_UNet import ConvDropoutNormNonlin, StackedConvLayers, \
     Upsample, Generic_UNet, StackedConvLayers_multi_channel
+from nnunet.network_architecture.neural_network import SegmentationNetwork
 from copy import deepcopy
+from torch.distributions import MultivariateNormal, Categorical
+from sklearn.mixture._gaussian_mixture import GaussianMixture
+from nnunet.utilities.gmm import GaussianMixtureModel
+
+class DynamicDistributionModel(nn.Module):
+    def __init__(self, feature_space_dim, tp_dim, num_components, momentum):
+        super(DynamicDistributionModel, self).__init__()
+        self.feature_space_dim = feature_space_dim 
+        self.num_components = num_components 
+        self.tp_dim = tp_dim
+
+        max_var = 0.01
+        delta=1-(1e-03)
+        min_dist = self.distance_bounds(k=num_components, delta=delta, max_var=max_var)
+        unscaled_means = torch.arange(0, num_components*min_dist, min_dist, requires_grad=False)[:, None] # for feature dim == 1
+        # scale to [-1, 1]^{feature_space_dim}
+        unscaled_means_norms = torch.norm(unscaled_means, dim=-1)
+        max_norm = torch.max(unscaled_means_norms)
+        self.means = unscaled_means / max_norm
+        
+        self.vars = torch.full_like(self.means, fill_value=max_var, requires_grad=False)
+        # self.vars = (unscaled_vars - 1e-05) / (1e-03 - 1e-05)
+
+        self.min_dist = min_dist / max_norm.item()
+
+        hidden_dim = 1000
+        
+        self.task_mu_modules = nn.ModuleList([
+            nn.Sequential(
+                # each task's mean of dim feature space (flattented), scalara vars for each task, task prompt dim, task_id
+                nn.Linear((feature_space_dim * num_components) + (1 * num_components) + tp_dim + 1, hidden_dim), 
+                nn.ReLU(), 
+                nn.Linear(hidden_dim, feature_space_dim),
+                nn.Tanh(), 
+            )
+            for t in range(num_components)
+        ])
+        self.task_sigma_modules = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear((feature_space_dim * num_components) + (1 * num_components) + tp_dim + 1, hidden_dim), 
+                nn.ReLU(), 
+                nn.Linear(hidden_dim, 1),
+                nn.ReLU()
+            )
+            for t in range(num_components)
+        ])
+
+        self.momentum = momentum
+
+    def get_mean_var(self):
+        return self.means, self.vars
+
+
+    def distance_bounds(self, k=None, max_var=None, delta=None, m=None, n=1, n_min=1):
+        min_num_samples = 5000 * 28 * 28 # min(number of images per class k) * resolution 
+        # max_error = 1e-03
+        var_1 = var_2 = 1
+        # n = n_min = 1 
+        w_min = 0.1 
+        C = 1344
+
+        def distance_bound(k=None, max_var=None, delta=None, m=None, n=1, n_min=1):
+            if m is None: 
+                m = min_num_samples
+
+            if max_var is None:
+                max_var = var_1
+
+            if k is None:
+                k = self.num_components
+
+            # Assume that the min number of required samples is met
+            r = np.max((k, C*np.log(n/n_min)))
+            # Distance bound:
+            min_dist = 14 * max_var * np.power(r * np.log(4*m / delta), 1/4)
+
+            # Test whether the number of samples satisfies the actual min required samples derived under the assumption mu's 
+            mu_max = min_dist / 2
+            min_req_samples = (np.power(n, 3) / np.power(w_min, 2)) * (np.log(np.power(np.abs(mu_max), 2) / np.power(max_var, 2)) + np.log(n/delta))
+            if m < min_req_samples:
+                return np.nan 
+            
+            return min_dist 
+
+        return distance_bound(delta=delta)
+
+    def forward(self, x, tc_inds, with_momentum_update=True):
+        # Returns: updated means and vars
+        
+        self.means = self.means.detach().clone().to(device=x.device)
+        self.vars = self.vars.detach().clone().to(device=x.device)
+
+        for t, task_id in enumerate(tc_inds):
+            if not isinstance(task_id, torch.Tensor):
+                task_id = torch.tensor([task_id])[:, None].to(device=x.device)
+
+            if self.means.device != x.device:
+                self.means = self.means.to(device=x.device)
+                self.vars = self.vars.to(device=x.device)
+            
+            input_means = self.means.permute(1, 0).repeat(x.size(0), 1).detach().to(device=x.device)
+            input_vars = self.vars.permute(1, 0).repeat(x.size(0), 1).detach().to(device=x.device)
+            task_id = task_id.repeat(x.size(0), 1)
+            
+            input = torch.cat((input_means, input_vars, task_id, x), -1)
+            mu_hat_t = self.task_mu_modules[t](input).mean(0) # averaged along batch
+            sigma_hat_t = self.task_sigma_modules[t](input).mean(0) # averaged along batch
+
+            if with_momentum_update:
+                updated_var_t = (1 - self.momentum) * sigma_hat_t + (self.momentum * self.vars[t]) + 0.0001 # for numerical stability
+                self.vars[t] = updated_var_t 
+                updated_mean_t = (1 - self.momentum) * mu_hat_t + (self.momentum * self.means[t])
+                print(f"updated mean, var {t}: {updated_mean_t}, {updated_var_t}")
+                self.means[t] = updated_mean_t 
+            
+
+        return self.means, self.vars
+
 
 class StackedFusionConvLayers(nn.Module):
     def __init__(self, input_feature_channels, bottleneck_feature_channel, output_feature_channels, num_convs,
@@ -225,14 +344,14 @@ class UniSeg_model(Generic_UNet):
 
         # Classifier & Global info
         num_conv_stage = 3
-        self.intermedia_prompt = nn.Parameter(torch.randn(1, self.num_class, patch_size[0]//16, patch_size[1]//32, patch_size[2]//32))
+        self.intermediate_prompt = nn.Parameter(torch.randn(1, self.num_class, patch_size[0]//16, patch_size[1]//32, patch_size[2]//32))
         self.fusion_layer = StackedFusionConvLayers(final_num_features+task_total_number, (final_num_features+task_total_number)//4, task_total_number, num_conv_stage,
                                                               self.conv_op, self.conv_kwargs, self.norm_op,
                                                               self.norm_op_kwargs, self.dropout_op,
                                                               self.dropout_op_kwargs, self.nonlin, self.nonlin_kwargs,
                                                               None, basic_block=basic_block)
         final_num_features = final_num_features + 1
-        print("intermedia_prompt size", self.intermedia_prompt.size(), torch.min(self.intermedia_prompt), torch.max(self.intermedia_prompt))
+        print("intermediate_prompt size", self.intermediate_prompt.size(), torch.min(self.intermediate_prompt), torch.max(self.intermediate_prompt))
 
         # if we don't want to do dropout in the localization pathway then we set the dropout prob to zero here
         if not dropout_in_localization:
@@ -272,9 +391,10 @@ class UniSeg_model(Generic_UNet):
             ))
 
         for ds in range(len(self.conv_blocks_localization)):
-            self.seg_outputs.append(conv_op(self.conv_blocks_localization[ds][-1].output_channels, num_classes,
+            self.seg_outputs.append(nn.Conv3d(self.conv_blocks_localization[ds][-1].output_channels, num_classes,
                                             1, 1, 0, 1, 1, seg_output_use_bias))
-
+            # self.seg_outputs.append(conv_op(self.conv_blocks_localization[ds][-1].output_channels, num_classes,
+            #                                 1, 1, 0, 1, 1, seg_output_use_bias))
 
         self.upscale_logits_ops = []
         cum_upsample = np.cumprod(np.vstack(pool_op_kernel_sizes), axis=0)[::-1]
@@ -302,6 +422,14 @@ class UniSeg_model(Generic_UNet):
             self.apply(self.weightInitializer)
             # self.apply(print_module_training_status)
 
+        # Init module for getting embeddings 
+        self.extractor = nn.ModuleDict({
+            "identity": nn.Identity()
+        })
+        
+        self.channel_reduction = nn.Conv3d(num_classes, 1, 1, 1, 0, 1, 1, seg_output_use_bias)
+        self.final_tanh = nn.Tanh()
+
 
     def forward(self, x, task_id, get_prompt=False):
         skips = []
@@ -317,9 +445,10 @@ class UniSeg_model(Generic_UNet):
 
         x = self.conv_blocks_context[-1](x)
         # print(now_prompt.size())
-        now_prompt = self.intermedia_prompt.repeat(bs,1,1,1,1)
+        now_prompt = self.intermediate_prompt.repeat(bs,1,1,1,1)
         dynamic_prompt = self.fusion_layer(torch.cat([x, now_prompt], dim=1))
         task_prompt = torch.index_select(dynamic_prompt, 1, task_id[0])
+        task_prompt = self.extractor["identity"](task_prompt)
         if get_prompt:
             temp_x = x.detach().clone()
         x = torch.cat([x, task_prompt], dim=1)
@@ -331,8 +460,13 @@ class UniSeg_model(Generic_UNet):
             x = self.conv_blocks_localization[u](x)
             seg_outputs.append(self.final_nonlin(self.seg_outputs[u](x)))
 
+        
+        # final_out = self.final_tanh(seg_outputs[-1].mean(dim=1, keepdim=True))
+        final_out = self.final_tanh(self.channel_reduction(seg_outputs[-1]))
+        seg_outputs[-1] = final_out
+
         if get_prompt:
-            return seg_outputs[-1], self.intermedia_prompt.detach().clone(), dynamic_prompt.detach().clone(), task_prompt.detach().clone(), temp_x
+            return final_out, self.intermediate_prompt.detach().clone(), dynamic_prompt.detach().clone(), task_prompt.detach().clone(), temp_x
 
         if self._deep_supervision and self.do_ds:
             return list([seg_outputs[-1]] + [i(j) for i, j in
@@ -364,7 +498,7 @@ class UniSeg_model(Generic_UNet):
 
         x = self.conv_blocks_context[-1](x)
         # print(now_prompt.size())
-        now_prompt = self.intermedia_prompt.repeat(bs,1,1,1,1)
+        now_prompt = self.intermediate_prompt.repeat(bs,1,1,1,1)
         dynamic_prompt = self.fusion_layer(torch.cat([x, now_prompt], dim=1))
         task_prompt = torch.index_select(dynamic_prompt, 1, task_id[0])
 
@@ -388,3 +522,147 @@ class UniSeg_model(Generic_UNet):
         else:
             return seg_outputs[-1]
 
+
+
+# class TaskPromptFeatureExtractor(nn.Module):
+class TaskPromptFeatureExtractor(SegmentationNetwork):
+
+    def __init__(self, feature_space_dim, feature_extractor, num_tasks, queue_size, momentum=0.90, *args, **kwargs):
+        super().__init__()
+
+        self.num_tasks = num_tasks
+        self.feature_space_dim = feature_space_dim
+        tp_dim = int(feature_extractor.intermediate_prompt.numel() / feature_extractor.num_class)
+        self.dynamic_dist = DynamicDistributionModel(feature_space_dim, tp_dim, num_tasks, momentum)
+
+        # self.feature_extractor = UniSeg_model(final_nonlin=lambda x: x, *args, **kwargs)
+        self.feature_extractor = feature_extractor
+
+        # TODO: rename to task prompt embeddings
+        self.task_prompt_module_embeddings = None
+
+        def get_embeddings_hook(module, input, output: torch.Tensor):
+            
+            self.task_prompt_module_embeddings = output.detach().clone().to(device=output.device).requires_grad_(False)
+        
+        self.get_embeddings_hook_handle = self.feature_extractor.extractor["identity"].register_forward_hook(get_embeddings_hook)
+
+        self.queue_size = queue_size
+    
+
+        self.feature_space_qs = [[] for i in range(num_tasks)]
+        self.gaussian_mixtures = [GaussianMixture(1) for i in range(num_tasks)]
+
+        self.do_ds = False
+
+        self.queue_min = queue_size // 10
+        self.gmm_fitted = False
+
+
+    def init_gmms(self):
+        means, vars = self.dynamic_dist.get_mean_var()
+
+        for i in range(self.num_tasks):
+            self.gaussian_mixtures[i].means_ = means[i].detach().cpu().numpy()
+            self.gaussian_mixtures[i].covariances_ = vars[i].detach().cpu().numpy().item() * np.eye(self.feature_space_dim)
+    
+
+    def train_gmms(self):
+        # Train using queue
+        trained_indices = []
+        for t in range(self.num_tasks):
+            task_queue = self.feature_space_qs[t] 
+            if len(task_queue) <= self.queue_min:
+                continue
+            task_queue = torch.vstack(task_queue).detach().cpu().numpy()
+            self.gaussian_mixtures[t].fit(task_queue)
+            trained_indices.append(t)
+        
+        # Collect params and construct pytorch dist
+        # est_means = torch.from_numpy(np.vstack([self.gaussian_mixtures[t].means_ for t in trained_indices]))
+        # est_covs = torch.from_numpy(np.vstack([self.gaussian_mixtures[t].covariances_ for t in trained_indices]))
+        est_weights = torch.from_numpy(np.vstack([self.gaussian_mixtures[t].weights_ for t in trained_indices]))
+        lower_bounds = np.vstack([self.gaussian_mixtures[t].lower_bound_ for t in trained_indices])
+
+
+        component_distributions = []
+        for t in trained_indices:
+            mean_t = torch.from_numpy(self.gaussian_mixtures[t].means_)
+            cov_t = torch.from_numpy(self.gaussian_mixtures[t].covariances_)
+            if torch.cuda.is_available():
+                mean_t = mean_t.cuda()
+                cov_t = cov_t.cuda()
+
+            if len(cov_t.shape) == 2:
+                cov_t = cov_t.unsqueeze(0).repeat(mean_t.size(0), 1, 1)
+
+            component_distributions.append(MultivariateNormal(mean_t, cov_t))
+
+        # https://discuss.pytorch.org/t/how-to-use-torch-distributions-multivariate-normal-multivariatenormal-in-multi-gpu-mode/135030/3
+        # component_distributions = [
+        #     MultivariateNormal(mean, covariance) for mean, covariance in zip(est_means, est_covs)
+        # ]
+        categorical = Categorical(est_weights)
+        self.feature_space_gmm = GaussianMixtureModel(categorical, component_distributions)
+
+        self.gmm_fitted = True
+        # return est_means, est_covs, est_weights, lower_bounds
+        return est_weights, lower_bounds
+
+    def forward(self, x, task_id, tc_inds):
+        if self.train:
+            return self.forward_train(x, task_id, tc_inds)
+        else :
+            return self.forward_inference(x, task_id)
+
+
+    def forward_train(self, x, task_id, tc_inds):
+        features, _, _, _, _ = self.feature_extractor(x, task_id, get_prompt=True)
+
+        # Validate that hook activated 
+        if self.task_prompt_module_embeddings is not None:
+
+            # Flatten
+            flat_feat_extracts = self.task_prompt_module_embeddings.reshape(x.size(0), -1)
+
+            mus, sigs = self.dynamic_dist(flat_feat_extracts, tc_inds, with_momentum_update=True)
+
+        return features, mus, sigs
+
+    def forward_inference(self, x, task_id):
+        features, _, _, _, _ = self.feature_extractor(x, task_id, get_prompt=False)
+
+        # Use GMM + Bayes' Rule 
+        return self.segment(features)
+
+    def get_distance_bounds(self):
+        return self.dynamic_dist.min_dist
+
+    def segment(self, features: torch.Tensor):
+
+        b = features.size(0)
+        bview_features = features.reshape(b, -1, self.feature_space_dim)
+
+        segmentation = self.feature_space_gmm.classify(bview_features).reshape(features.size())
+
+        return segmentation
+
+    def standardize_segmentation(self, segmentation, tc_inds_to_cls):
+
+        vals = torch.unique(segmentation)
+        for val in vals:
+            msk = segmentation == val
+            segmentation[msk] = tc_inds_to_cls[val.item()]
+
+        return segmentation
+    
+    def update_queues(self, feature_extracts, tc_inds):
+        
+        for i, task_id in enumerate(tc_inds):
+            idxs = torch.randint(0, feature_extracts[i].shape[-1], (10,))
+            rand_elements = feature_extracts[i][idxs]
+            # Enqueue and Dequeue
+            if len(self.feature_space_qs[task_id]) + 10 > self.queue_size:
+                self.feature_space_qs[task_id].pop(0)
+            
+            self.feature_space_qs[task_id].append(rand_elements.reshape(-1, self.feature_space_dim))

@@ -58,7 +58,8 @@ def get_default_configuration(exp_name, network, task, network_trainer, plans_id
 
     trainer_class = recursive_find_python_class([join(*search_in)], network_trainer,
                                                 current_module=base_module)
-
+    
+    # NOTE
     output_folder_name = join(network_training_output_dir+exp_name, network, task, network_trainer + "__" + plans_identifier)
 
     print("###############################################")
