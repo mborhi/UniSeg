@@ -37,7 +37,7 @@ from abc import abstractmethod
 from datetime import datetime
 from tqdm import trange
 from nnunet.utilities.to_torch import maybe_to_torch, to_cuda
-
+import wandb
 
 class NetworkTrainer(object):
     def __init__(self, deterministic=True, fp16=False):
@@ -454,7 +454,8 @@ class NetworkTrainer(object):
                         break # NOTE
             else:
                 for _ in range(self.num_batches_per_epoch):
-                    l = self.run_iteration(self.tr_gen, True)
+                    l = self.run_iteration(self.tr_gen, True) # NOTE With backprop
+                    # l = self.run_iteration(self.tr_gen, False, True) # NOTE for debug
                     train_losses_epoch.append(l)
                     # break # NOTE
 
@@ -463,9 +464,13 @@ class NetworkTrainer(object):
 
             self.all_tr_losses.append(np.mean(train_losses_epoch))
             self.print_to_log_file("train loss : %.4f" % self.all_tr_losses[-1])
+            wandb.log({"epoch_avg_loss": self.all_tr_losses[-1]})
+            
             # NOTE Add GMM claculations here
-            self.network.init_gmms()
-            self.network.train_gmms()
+            # NOTE this may be redundent all together
+            # self.network.init_gmms()
+            # self.network.train_gmms()
+            # self.network.construct_torch_gmm()
 
             with torch.no_grad():
                 # validation with train=False
@@ -476,6 +481,7 @@ class NetworkTrainer(object):
                     val_losses.append(l)
                 self.all_val_losses.append(np.mean(val_losses))
                 self.print_to_log_file("validation loss: %.4f" % self.all_val_losses[-1])
+                wandb.log({"val_loss": self.all_val_losses[-1]})
 
                 if self.also_val_in_tr_mode:
                     self.network.train()
@@ -486,8 +492,12 @@ class NetworkTrainer(object):
                         val_losses.append(l)
                     self.all_val_losses_tr_mode.append(np.mean(val_losses))
                     self.print_to_log_file("validation loss (train=True): %.4f" % self.all_val_losses_tr_mode[-1])
-
             self.update_train_loss_MA()  # needed for lr scheduler and stopping of training
+
+            # set gmm learned to false
+            self.network.gmm_fitted = False
+            # clear queues
+            self.network.clear_queues()
 
             continue_training = self.on_epoch_end()
 

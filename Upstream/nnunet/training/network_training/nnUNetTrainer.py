@@ -42,6 +42,7 @@ from nnunet.training.loss_functions.dice_loss import DC_and_CE_loss
 from nnunet.training.network_training.network_trainer import NetworkTrainer
 from nnunet.utilities.nd_softmax import softmax_helper
 from nnunet.utilities.tensor_utilities import sum_tensor
+import wandb
 
 matplotlib.use("agg")
 
@@ -696,7 +697,8 @@ class nnUNetTrainer(NetworkTrainer):
         with torch.no_grad():
             num_classes = target.unique().numel() #output.shape[1]
             output_softmax = output #softmax_helper(output)
-            output_seg = output_softmax.argmax(1)
+            # output_seg = output_softmax.argmax(1)
+            output_seg = output_softmax[:, 0]
             target = target[:, 0]
             axes = tuple(range(1, len(target.shape)))
             tp_hard = torch.zeros((target.shape[0], num_classes - 1)).to(output_seg.device.index)
@@ -725,6 +727,7 @@ class nnUNetTrainer(NetworkTrainer):
                                            zip(self.online_eval_tp, self.online_eval_fp, self.online_eval_fn)]
                                if not np.isnan(i)]
         self.all_val_eval_metrics.append(np.mean(global_dc_per_class))
+        wandb.log({"mean_global_dc_per_class": np.mean(global_dc_per_class)})
 
         self.print_to_log_file("Average global foreground Dice:", [np.round(i, 4) for i in global_dc_per_class])
         self.print_to_log_file("(interpret this as an estimate for the Dice of the different classes. This is not "

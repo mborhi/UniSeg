@@ -28,6 +28,8 @@ from nnunet.network_architecture.neural_network import SegmentationNetwork
 from nnunet.training.dataloading.dataset_loading import unpack_dataset
 from nnunet.training.loss_functions.dist_match_loss import DynamicDistMatchingLoss
 from nnunet.utilities.sep import get_task_set
+import copy 
+import wandb
 
 class UniSeg_Trainer(nnUNetTrainerV2):
     def __init__(self, plans_file, fold, output_folder=None, dataset_directory=None, batch_dice=True, stage=None,
@@ -108,8 +110,8 @@ class UniSeg_Trainer(nnUNetTrainerV2):
             self.uniseg_network.cuda()
         # self.network.inference_apply_nonlin = softmax_helper
         self.uniseg_network.inference_apply_nonlin = lambda x: x
-
-        self.network = TaskPromptFeatureExtractor(feature_space_dim=1, feature_extractor=self.uniseg_network, num_tasks=19, queue_size=500, momentum=0.999)
+        queue_size = 5000 
+        self.network = TaskPromptFeatureExtractor(feature_space_dim=1, feature_extractor=self.uniseg_network, num_tasks=19, queue_size=queue_size, momentum=0.999)
         if torch.cuda.is_available():
             self.network.cuda()
             self.network.dynamic_dist.means = self.network.dynamic_dist.means.cuda()
@@ -238,18 +240,23 @@ class UniSeg_Trainer(nnUNetTrainerV2):
         if self.fp16:
             with autocast():
                 # output = self.network(data, task_id)
-                tc_inds = self.task_id_class_lst_mapping[int(task_id[0])]
+                tc_inds = copy.deepcopy(self.task_id_class_lst_mapping[int(task_id[0])])
                 output = self.network(data, task_id, tc_inds)
                 if get_prompt:
                     return *output, [item.detach().clone() for item in target]
                 
                 output, mus, sigs = output
                 
+                # NOTE sanity check output
+                # output = torch.zeros_like(target[0], device=data.device)
+                # mus, sigs = self.network.get_mean_var()
+                # for i, tc_ind in enumerate(tc_inds):
+                #     output[target[0] == i] = mus[tc_ind]
+                
                 # make extractions 
                 extractions = [get_task_set(output, target[0], c) for c in range(self.task_class[int(task_id[0])])]
-
-
-                # Check that each tc_ind has a non-empty list; if one does, remove it and the tc_ind
+                
+                # Check that each tc_ind has a non-empty extraction; if one does, remove it and the tc_ind
                 idx = 0
                 while idx < len(tc_inds):
                     if len(extractions[idx]) == 0:
@@ -264,7 +271,9 @@ class UniSeg_Trainer(nnUNetTrainerV2):
 
                 del data
                 # l = self.loss(output, target)
-                l = self.loss(extractions, mus, sigs, tc_inds)
+                # l = self.loss(extractions, mus, sigs, tc_inds)
+                l = self.loss.gnlll(output, mus, sigs, target[0], tc_inds)
+                wandb.log({"loss": l.item()})
 
                 # TODO make method of network; features = network output
                 # Updated Queues
@@ -286,6 +295,7 @@ class UniSeg_Trainer(nnUNetTrainerV2):
             if not self.network.gmm_fitted:
                 self.network.init_gmms()
                 self.network.train_gmms()
+            # self.network.construct_torch_gmm()
             # segment output
             output_segmentation = self.network.segment(output)
             std_otuput_segmentation = self.network.standardize_segmentation(output_segmentation, self.class_lst_to_std_mapping)

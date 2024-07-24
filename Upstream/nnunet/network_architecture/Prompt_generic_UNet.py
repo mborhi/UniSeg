@@ -12,6 +12,10 @@ from torch.distributions import MultivariateNormal, Categorical
 from sklearn.mixture._gaussian_mixture import GaussianMixture
 from nnunet.utilities.gmm import GaussianMixtureModel
 
+from nnunet.utilities.sep import kl_divs
+
+import wandb
+
 class DynamicDistributionModel(nn.Module):
     def __init__(self, feature_space_dim, tp_dim, num_components, momentum):
         super(DynamicDistributionModel, self).__init__()
@@ -21,15 +25,19 @@ class DynamicDistributionModel(nn.Module):
 
         max_var = 0.01
         delta=1-(1e-03)
-        min_dist = self.distance_bounds(k=num_components, delta=delta, max_var=max_var)
+        # NOTE just use linspace here
+        min_dist = 60. #self.distance_bounds(k=num_components, delta=delta, max_var=max_var*100)
         unscaled_means = torch.arange(0, num_components*min_dist, min_dist, requires_grad=False)[:, None] # for feature dim == 1
         # scale to [-1, 1]^{feature_space_dim}
-        unscaled_means_norms = torch.norm(unscaled_means, dim=-1)
+        unscaled_means_norms = torch.norm(unscaled_means, dim=1)
         max_norm = torch.max(unscaled_means_norms)
         self.means = unscaled_means / max_norm
         
         self.vars = torch.full_like(self.means, fill_value=max_var, requires_grad=False)
         # self.vars = (unscaled_vars - 1e-05) / (1e-03 - 1e-05)
+
+        print(f"initial means: {self.means}")
+        print(f"initial vars: {self.vars}")
 
         self.min_dist = min_dist / max_norm.item()
 
@@ -62,7 +70,7 @@ class DynamicDistributionModel(nn.Module):
 
 
     def distance_bounds(self, k=None, max_var=None, delta=None, m=None, n=1, n_min=1):
-        min_num_samples = 5000 * 28 * 28 # min(number of images per class k) * resolution 
+        min_num_samples = 500 # min(number of images per class k in batch) * resolution 
         # max_error = 1e-03
         var_1 = var_2 = 1
         # n = n_min = 1 
@@ -114,13 +122,14 @@ class DynamicDistributionModel(nn.Module):
             
             input = torch.cat((input_means, input_vars, task_id, x), -1)
             mu_hat_t = self.task_mu_modules[t](input).mean(0) # averaged along batch
-            sigma_hat_t = self.task_sigma_modules[t](input).mean(0) # averaged along batch
+            # sigma_hat_t = self.task_sigma_modules[t](input).mean(0) # averaged along batch
 
             if with_momentum_update:
-                updated_var_t = (1 - self.momentum) * sigma_hat_t + (self.momentum * self.vars[t]) + 0.0001 # for numerical stability
-                self.vars[t] = updated_var_t 
+                # updated_var_t = (1 - self.momentum) * sigma_hat_t + (self.momentum * self.vars[t]) + 0.0001 # for numerical stability
+                # self.vars[t] = updated_var_t 
                 updated_mean_t = (1 - self.momentum) * mu_hat_t + (self.momentum * self.means[t])
-                print(f"updated mean, var {t}: {updated_mean_t}, {updated_var_t}")
+                # print(f"updated mean, var {t}: {updated_mean_t}, {updated_var_t}")
+                print(f"updated mean[{t}]: {updated_mean_t}")
                 self.means[t] = updated_mean_t 
             
 
@@ -427,7 +436,8 @@ class UniSeg_model(Generic_UNet):
             "identity": nn.Identity()
         })
         
-        self.channel_reduction = nn.Conv3d(num_classes, 1, 1, 1, 0, 1, 1, seg_output_use_bias)
+        feature_space_dim = 1
+        self.channel_reduction = nn.Conv3d(num_classes, feature_space_dim, 1, 1, 0, 1, 1, seg_output_use_bias)
         self.final_tanh = nn.Tanh()
 
 
@@ -555,7 +565,7 @@ class TaskPromptFeatureExtractor(SegmentationNetwork):
 
         self.do_ds = False
 
-        self.queue_min = queue_size // 10
+        self.queue_min = 51
         self.gmm_fitted = False
 
 
@@ -584,7 +594,6 @@ class TaskPromptFeatureExtractor(SegmentationNetwork):
         est_weights = torch.from_numpy(np.vstack([self.gaussian_mixtures[t].weights_ for t in trained_indices]))
         lower_bounds = np.vstack([self.gaussian_mixtures[t].lower_bound_ for t in trained_indices])
 
-
         component_distributions = []
         for t in trained_indices:
             mean_t = torch.from_numpy(self.gaussian_mixtures[t].means_)
@@ -592,11 +601,21 @@ class TaskPromptFeatureExtractor(SegmentationNetwork):
             if torch.cuda.is_available():
                 mean_t = mean_t.cuda()
                 cov_t = cov_t.cuda()
+                wandb.log({
+                    f'gmm_mean_{t}': mean_t.item(), 
+                    f'gmm_var_{t}': cov_t.item(), 
+                    f'gmm_lower_bound_{t}': self.gaussian_mixtures[t].lower_bound_,
+                })
 
             if len(cov_t.shape) == 2:
                 cov_t = cov_t.unsqueeze(0).repeat(mean_t.size(0), 1, 1)
 
             component_distributions.append(MultivariateNormal(mean_t, cov_t))
+
+        # Determine the KL w.r.t these EM-learned dists and targets
+        learned_target_kls = kl_divs(component_distributions, *self.get_mean_var())
+        for i, kl in enumerate(learned_target_kls):
+            wandb.log({f'est_gmm_kl_{trained_indices[i]}': kl.item()})
 
         # https://discuss.pytorch.org/t/how-to-use-torch-distributions-multivariate-normal-multivariatenormal-in-multi-gpu-mode/135030/3
         # component_distributions = [
@@ -609,6 +628,20 @@ class TaskPromptFeatureExtractor(SegmentationNetwork):
         # return est_means, est_covs, est_weights, lower_bounds
         return est_weights, lower_bounds
 
+    def construct_torch_gmm(self):
+        means, vars = self.get_mean_var()
+        comp_dists = []
+        for t in range(self.num_tasks):
+            cov_t = vars[t]
+            if len(cov_t.shape) != 3:
+                cov_t = cov_t.unsqueeze(0).repeat(means[t].size(0), 1, 1)
+            
+            comp_dists.append(MultivariateNormal(means[t], cov_t))
+
+        categorical = Categorical(torch.ones(self.num_tasks, device=means.device) / self.num_tasks)
+
+        self.feature_space_gmm = GaussianMixtureModel(categorical, comp_dists)
+
     def forward(self, x, task_id, tc_inds):
         if self.train:
             return self.forward_train(x, task_id, tc_inds)
@@ -619,14 +652,22 @@ class TaskPromptFeatureExtractor(SegmentationNetwork):
     def forward_train(self, x, task_id, tc_inds):
         features, _, _, _, _ = self.feature_extractor(x, task_id, get_prompt=True)
 
+        norms = features.reshape(features.size(0), -1).norm(dim=1)
+        for norm in norms:
+            wandb.log({"output feature space norm (per batch)": norm.item()})
+
         # Validate that hook activated 
         if self.task_prompt_module_embeddings is not None:
 
             # Flatten
             flat_feat_extracts = self.task_prompt_module_embeddings.reshape(x.size(0), -1)
 
-            mus, sigs = self.dynamic_dist(flat_feat_extracts, tc_inds, with_momentum_update=True)
-
+            # mus, sigs = self.dynamic_dist(flat_feat_extracts, tc_inds, with_momentum_update=True)
+            mus, sigs = self.dynamic_dist.get_mean_var()
+            # Plot means, vars
+            for t in range(self.num_tasks): 
+                wandb.log({f'mean[{t}]': mus[t], f'vars[{t}]': sigs[t]})
+        
         return features, mus, sigs
 
     def forward_inference(self, x, task_id):
@@ -657,12 +698,24 @@ class TaskPromptFeatureExtractor(SegmentationNetwork):
         return segmentation
     
     def update_queues(self, feature_extracts, tc_inds):
-        
+        updated_size = 50
+        # create mask of accurate feature extractions (highest log-likelihood w.r.t target Gauss.)
         for i, task_id in enumerate(tc_inds):
-            idxs = torch.randint(0, feature_extracts[i].shape[-1], (10,))
+            idxs = torch.randint(0, feature_extracts[i].shape[-1], (updated_size,))
             rand_elements = feature_extracts[i][idxs]
             # Enqueue and Dequeue
-            if len(self.feature_space_qs[task_id]) + 10 > self.queue_size:
-                self.feature_space_qs[task_id].pop(0)
+            if len(self.feature_space_qs[task_id]) + updated_size > self.queue_size:
+                for i in range(len(self.feature_space_qs[task_id]) + updated_size - self.queue_size):
+                    self.feature_space_qs[task_id].pop(0)
             
             self.feature_space_qs[task_id].append(rand_elements.reshape(-1, self.feature_space_dim))
+
+
+    def clear_queues(self):
+
+        for i in range(self.num_tasks):
+            self.feature_space_qs[i] = []
+
+
+    def get_mean_var(self):
+        return self.dynamic_dist.get_mean_var()

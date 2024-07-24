@@ -24,6 +24,7 @@ from nnunet.training.network_training.nnUNetTrainerCascadeFullRes import nnUNetT
 from nnunet.training.network_training.nnUNetTrainerV2_CascadeFullRes import nnUNetTrainerV2CascadeFullRes
 from nnunet.utilities.task_name_id_conversion import convert_id_to_task_name
 
+import wandb
 
 def main():
     parser = argparse.ArgumentParser()
@@ -165,6 +166,17 @@ def main():
         trainer.save_latest_only = True  # if false it will not store/overwrite _latest but separate files each
 
     trainer.initialize(not validation_only)
+    init_means, init_vars = trainer.network.dynamic_dist.get_mean_var()
+    wandb.init(
+        project="Target-Distribution-Matching-UniSeg",
+        config={
+            "exp_name": exp_name,
+            "debug": True,
+            "network": network, 
+            "initial_means": init_means, 
+            "initial_vars": init_vars
+        }
+    )
 
     if find_lr:
         trainer.find_lr()

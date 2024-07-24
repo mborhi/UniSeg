@@ -1,5 +1,6 @@
 import torch 
 import torch.nn.functional as F
+from torch.distributions import kl_divergence, MultivariateNormal, Normal
 
 def get_pos_neg_sets(inp, gt, match_dims=True):
     """Extracts the values from `inp` that correspond to the positive labeled values in `gt`.
@@ -78,6 +79,20 @@ def get_task_set(inp, gt, task, match_dims=True):
         extraction.append(inp[i, gt[i, :]==task])
 
     return torch.cat(extraction)
+
+def kl_divs(dists, target_means, target_covs):
+
+    kls = []
+    for i, dist in enumerate(dists):
+        target_mean, target_std = target_means[i], torch.sqrt(target_covs[i])
+        if target_mean.shape[-1] > 1:
+            target_dist = MultivariateNormal(target_mean, target_std)
+        else:
+            target_dist = Normal(target_mean, target_std)
+        
+        kls.append(kl_divergence(dist, target_dist))
+
+    return kls
 
 if __name__ == "__main__":
     # Test
