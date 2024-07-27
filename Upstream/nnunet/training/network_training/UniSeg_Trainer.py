@@ -41,18 +41,21 @@ class UniSeg_Trainer(nnUNetTrainerV2):
         self.task = {"live":0, "kidn":1, "hepa":2, "panc":3, "colo":4, "lung":5, "sple":6, "sub-":7, "pros":8, "BraT":9, "PETC": 10}
         self.task_class = {0: 3, 1: 3, 2: 3, 3: 3, 4: 2, 5: 2, 6: 2, 7: 2, 8: 2, 9: 4, 10: 2}
         self.task_id_class_lst_mapping = {
-            0: [0, 1, 2], 
-            1: [0, 3, 4], 
-            2: [0, 5, 6], 
-            3: [0, 7, 8], 
-            4: [0, 9], 
-            5: [0, 10], 
-            6: [0, 11], 
-            7: [0, 12], 
-            8: [0, 13], 
-            9: [0, 14, 15, 16, 17], 
-            10: [0, 18]
+            8: [0, 1], 
         }
+        # self.task_id_class_lst_mapping = {
+        #     0: [0, 1, 2], 
+        #     1: [0, 3, 4], 
+        #     2: [0, 5, 6], 
+        #     3: [0, 7, 8], 
+        #     4: [0, 9], 
+        #     5: [0, 10], 
+        #     6: [0, 11], 
+        #     7: [0, 12], 
+        #     8: [0, 13], 
+        #     9: [0, 14, 15, 16, 17], 
+        #     10: [0, 18]
+        # }
         self.class_lst_task_id_mapping = {}
         self.class_lst_to_std_mapping = {}
         for task_id, cls_lst in self.task_id_class_lst_mapping.items():
@@ -73,6 +76,7 @@ class UniSeg_Trainer(nnUNetTrainerV2):
         shutil.copytree(os.path.join(dirname.split("nnunet")[0], "nnunet"), os.path.join(self.output_folder, "code"))
         print("copy code successfully!")
         self.task_index = [0 for _ in range(self.total_task_num)]
+        self.update_target_iter = 10
 
     def initialize_network(self):
         """
@@ -115,7 +119,8 @@ class UniSeg_Trainer(nnUNetTrainerV2):
         self.uniseg_network.inference_apply_nonlin = lambda x: x
         queue_size = 5000 
         self.feature_space_dim = 32
-        self.network = TaskPromptFeatureExtractor(feature_space_dim=self.feature_space_dim, feature_extractor=self.uniseg_network, num_tasks=19, queue_size=queue_size, momentum=0.999)
+        num_components = len(self.class_lst_to_std_mapping.keys())
+        self.network = TaskPromptFeatureExtractor(feature_space_dim=self.feature_space_dim, feature_extractor=self.uniseg_network, num_tasks=num_components, queue_size=queue_size, momentum=0.999)
         if torch.cuda.is_available():
             self.network.cuda()
             self.network.dynamic_dist.means = self.network.dynamic_dist.means.cuda()
@@ -235,12 +240,8 @@ class UniSeg_Trainer(nnUNetTrainerV2):
 
 
         self.optimizer.zero_grad()
-
-        # 1. Use hook to get encoded input
-        # 2. Estimate distribution params, and update
-        # 3. feature space extraction (w/ upsace) for each task present in the mini-batch
-        # 4. Compute loss
-        # 5. backward
+        if (self.epoch + 1) % self.update_target_iter == 0:
+                self.network.output_target_est = True
 
         if self.fp16:
             with autocast():
@@ -286,7 +287,7 @@ class UniSeg_Trainer(nnUNetTrainerV2):
                 del data
                 # l = self.loss(output, target)
                 # l = self.loss(extractions, mus, sigs, tc_inds)
-                l, est_dists = self.loss(extractions, mus, sigs, tc_inds, return_est_dists=True)
+                l, est_dists = self.loss(extractions, mus, sigs, tc_inds, return_est_dists=True, with_sep_loss=self.network.output_target_est)
                 # l = self.loss.gnlll(output, mus, sigs, target[0], tc_inds)
                 # l = self.loss.vec_gnlll(extractions, mus, sigs, tc_inds)
                 # print(f"gnll: {l.item()}")
@@ -326,6 +327,9 @@ class UniSeg_Trainer(nnUNetTrainerV2):
             self.run_online_evaluation([std_otuput_segmentation], target)
 
         del target
+
+        if (self.epoch + 1) % self.update_target_iter == 0:
+                self.network.output_target_est = False
 
         return l.detach().cpu().numpy()
 

@@ -584,6 +584,7 @@ class TaskPromptFeatureExtractor(SegmentationNetwork):
         self.queue_min = 1
         self.gmm_fitted = False
         self.feature_space_gmm = None
+        self.output_target_est = False
 
 
     def init_gmms(self):
@@ -682,10 +683,12 @@ class TaskPromptFeatureExtractor(SegmentationNetwork):
 
             # Flatten
             flat_feat_extracts = self.task_prompt_module_embeddings.reshape(x.size(0), -1)
-
-            mus, sigs = self.dynamic_dist(flat_feat_extracts, tc_inds, with_momentum_update=True)
-            # mus, sigs = self.dynamic_dist.get_mean_var()
-            # Plot means, vars
+            
+            if self.output_target_est:
+                mus, sigs = self.dynamic_dist(flat_feat_extracts, tc_inds, with_momentum_update=True)
+            else:
+                mus, sigs = self.dynamic_dist.get_mean_var()
+            # Record means, vars
             for t in range(self.num_tasks): 
                 wandb.log({f'mean[{t}]': mus[t], f'vars[{t}]': sigs[t]})
         

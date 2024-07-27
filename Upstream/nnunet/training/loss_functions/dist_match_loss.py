@@ -74,7 +74,7 @@ class DynamicDistMatchingLoss(nn.Module):
                 mean_j = means[j]
                 dist = torch.norm(mean_i - mean_j, 2)
                 if (dist - self.min_dist) + 1e-06 < 0:
-                    total_loss = total_loss + dist
+                    total_loss = total_loss + (self.min_dist - dist)
         return total_loss
 
     def get_separability_loss(self, means):
@@ -129,19 +129,22 @@ class DynamicDistMatchingLoss(nn.Module):
         
         return total_kl_div
 
-    def forward(self, pred_dists, means, covs, indices, handle_nan=False, return_est_dists=False):
+    def forward(self, pred_dists, means, covs, indices, handle_nan=False, return_est_dists=False, with_sep_loss=True):
         total_kl_div = self.get_distribution_loss(pred_dists, means, covs, indices, handle_nan=handle_nan, return_est_dists=return_est_dists)
 
         if return_est_dists:
             total_kl_div, est_dists = total_kl_div
 
         # sep_loss = self.get_separability_loss(means[indices, :])
-        sep_loss = self.get_sep_loss(means[indices, :])
+        if with_sep_loss:
+            sep_loss = self.get_sep_loss(means[indices, :])
+        else:
+            sep_loss = 0
         
         # total_loss = total_kl_div - sep_loss
         total_loss = total_kl_div + sep_loss
         
-        print(f"total loss: {total_loss} = total kl div ({total_kl_div}) - sep loss ({sep_loss})")
+        print(f"total loss: {total_loss} = total kl div ({total_kl_div}) + sep loss ({sep_loss})")
         wandb.log({"kl_div": total_kl_div, "sep_loss": sep_loss})
         
         if return_est_dists: return total_loss, est_dists
