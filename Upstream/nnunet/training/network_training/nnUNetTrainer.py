@@ -698,7 +698,7 @@ class nnUNetTrainer(NetworkTrainer):
             num_classes = target.unique().numel() #output.shape[1]
             output_softmax = output #softmax_helper(output)
             # output_seg = output_softmax.argmax(1)
-            output_seg = output_softmax[:, 0]
+            output_seg = output_softmax#[:, 0]
             target = target[:, 0]
             axes = tuple(range(1, len(target.shape)))
             tp_hard = torch.zeros((target.shape[0], num_classes - 1)).to(output_seg.device.index)

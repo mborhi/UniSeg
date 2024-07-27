@@ -27,7 +27,8 @@ from nnunet.training.loss_functions.deep_supervision import MultipleOutputLoss2
 from nnunet.network_architecture.neural_network import SegmentationNetwork
 from nnunet.training.dataloading.dataset_loading import unpack_dataset
 from nnunet.training.loss_functions.dist_match_loss import DynamicDistMatchingLoss
-from nnunet.utilities.sep import get_task_set
+from nnunet.training.loss_functions.dice_loss import DC_and_CE_loss, SoftDiceLoss
+from nnunet.utilities.sep import get_task_set, extract_task_set
 import copy 
 import wandb
 
@@ -100,6 +101,8 @@ class UniSeg_Trainer(nnUNetTrainerV2):
         dropout_op_kwargs = {'p': 0, 'inplace': True}
         net_nonlin = nn.LeakyReLU
         net_nonlin_kwargs = {'negative_slope': 1e-2, 'inplace': True}
+        # NOTE
+        self.base_num_features = 32
         self.uniseg_network = UniSeg_model(self.patch_size, self.total_task_num, [1, 2, 4], self.base_num_features, self.num_classes,
                                     len(self.net_num_pool_op_kernel_sizes),
                                     self.conv_per_stage, 2, conv_op, norm_op, norm_op_kwargs, dropout_op,
@@ -111,7 +114,8 @@ class UniSeg_Trainer(nnUNetTrainerV2):
         # self.network.inference_apply_nonlin = softmax_helper
         self.uniseg_network.inference_apply_nonlin = lambda x: x
         queue_size = 5000 
-        self.network = TaskPromptFeatureExtractor(feature_space_dim=1, feature_extractor=self.uniseg_network, num_tasks=19, queue_size=queue_size, momentum=0.999)
+        self.feature_space_dim = 32
+        self.network = TaskPromptFeatureExtractor(feature_space_dim=self.feature_space_dim, feature_extractor=self.uniseg_network, num_tasks=19, queue_size=queue_size, momentum=0.999)
         if torch.cuda.is_available():
             self.network.cuda()
             self.network.dynamic_dist.means = self.network.dynamic_dist.means.cuda()
@@ -155,6 +159,7 @@ class UniSeg_Trainer(nnUNetTrainerV2):
             # now wrap the loss
             # self.loss = MultipleOutputLoss2(self.loss, self.ds_loss_weights)
             # self.loss = MultipleOutputLoss2(self.loss, self.ds_loss_weights)
+            self.dc_loss = SoftDiceLoss(batch_dice=True, smooth=1e-5, do_bg=True, apply_nonlin=None, do_one_hot=False)
             
             ################# END ###################
 
@@ -248,18 +253,27 @@ class UniSeg_Trainer(nnUNetTrainerV2):
                 output, mus, sigs = output
                 
                 # NOTE sanity check output
+                # output = torch.zeros_like(target[0], dtype=torch.float, device=data.device).repeat(1, self.feature_space_dim, 1, 1, 1)
+                # for i, tc_ind in enumerate(tc_inds):
+                #     mask = (target[0] == i)
+                #     for j in range(self.feature_space_dim):  # Loop over the channels
+                #         values = mus[tc_ind][j].repeat(mask.sum())
+                #         output[:, j, :, :, :][mask.squeeze()] = values
+                # univariate sanity check
                 # output = torch.zeros_like(target[0], device=data.device)
                 # mus, sigs = self.network.get_mean_var()
                 # for i, tc_ind in enumerate(tc_inds):
                 #     output[target[0] == i] = mus[tc_ind]
                 
                 # make extractions 
-                extractions = [get_task_set(output, target[0], c) for c in range(self.task_class[int(task_id[0])])]
+                # extractions = [get_task_set(output, target[0], c) for c in range(self.task_class[int(task_id[0])])]
+                # Multivariate
+                extractions = [extract_task_set(output, target[0], c, keep_dims=True) for c in range(self.task_class[int(task_id[0])])]
                 
                 # Check that each tc_ind has a non-empty extraction; if one does, remove it and the tc_ind
                 idx = 0
                 while idx < len(tc_inds):
-                    if len(extractions[idx]) == 0:
+                    if extractions[idx].size(-1) < 2:
                         _ = extractions.pop(idx)
                         _ = tc_inds.pop(idx)
                     else:
@@ -272,8 +286,17 @@ class UniSeg_Trainer(nnUNetTrainerV2):
                 del data
                 # l = self.loss(output, target)
                 # l = self.loss(extractions, mus, sigs, tc_inds)
-                l = self.loss.gnlll(output, mus, sigs, target[0], tc_inds)
+                l, est_dists = self.loss(extractions, mus, sigs, tc_inds, return_est_dists=True)
+                # l = self.loss.gnlll(output, mus, sigs, target[0], tc_inds)
+                # l = self.loss.vec_gnlll(extractions, mus, sigs, tc_inds)
+                # print(f"gnll: {l.item()}")
                 wandb.log({"loss": l.item()})
+
+                # Test the dice score:
+                est_seg = self.network.segment_from_dists(output, est_dists, self.class_lst_to_std_mapping)
+                dc_score = self.dc_loss(est_seg.unsqueeze(1), target[0])
+                print(f"Dice Score: {-dc_score.item()}")
+                wandb.log({"train_dc": -dc_score.item()})
 
                 # TODO make method of network; features = network output
                 # Updated Queues

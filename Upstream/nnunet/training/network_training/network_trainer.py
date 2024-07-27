@@ -454,8 +454,8 @@ class NetworkTrainer(object):
                         break # NOTE
             else:
                 for _ in range(self.num_batches_per_epoch):
-                    l = self.run_iteration(self.tr_gen, True) # NOTE With backprop
-                    # l = self.run_iteration(self.tr_gen, False, True) # NOTE for debug
+                    # l = self.run_iteration(self.tr_gen, True) # NOTE With backprop
+                    l = self.run_iteration(self.tr_gen, True, True) # NOTE for debug
                     train_losses_epoch.append(l)
                     # break # NOTE
 

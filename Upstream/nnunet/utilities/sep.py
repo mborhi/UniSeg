@@ -80,15 +80,34 @@ def get_task_set(inp, gt, task, match_dims=True):
 
     return torch.cat(extraction)
 
+def extract_task_set(batched_input, batched_gt, task_id, keep_dims=False):
+
+    while batched_input.shape[-3:] != batched_gt.shape[-3:] and batched_input.size(1) == 1:
+        batched_input = F.interpolate(batched_input, scale_factor=(2, 2, 2), mode='trilinear')
+
+    extraction_set = []
+    for i in range(batched_input.size(0)):
+        extraction_voxels = torch.argwhere(batched_gt[i, 0] == task_id)
+        
+        extraction = batched_input[i, :, extraction_voxels[:, 0], extraction_voxels[:, 1], extraction_voxels[:, 2]] #, pos_voxels[:, 2]]
+        extraction_set.append(extraction)
+    extraction_set = torch.concat(extraction_set, -1)    
+
+    if keep_dims: 
+        return extraction_set
+    
+    return extraction_set.mean(dim=0)
+
 def kl_divs(dists, target_means, target_covs):
 
     kls = []
     for i, dist in enumerate(dists):
-        target_mean, target_std = target_means[i], torch.sqrt(target_covs[i])
-        if target_mean.shape[-1] > 1:
-            target_dist = MultivariateNormal(target_mean, target_std)
-        else:
-            target_dist = Normal(target_mean, target_std)
+        target_mean, target_cov = target_means[i], target_covs[i]
+        # target_std = target_std.repeat(target_mean.size(0), 1)
+        # if target_mean.shape[-1] > 1:
+        target_dist = MultivariateNormal(target_mean, target_cov)
+        # else:
+        #     target_dist = Normal(target_mean, target_std)
         
         kls.append(kl_divergence(dist, target_dist))
 

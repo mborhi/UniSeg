@@ -14,7 +14,8 @@
             "type": "debugpy",
             "request": "launch",
             "module": "nnunet.run.run_training",
-            "args": ["3d_fullres", "UniSeg_Trainer", "97", "0", "-exp_name", "TaskPromptFeatureExtractor"],
+            // "args": ["3d_fullres", "UniSeg_Trainer", "97", "0", "-exp_name", "TaskPromptFeatureExtractor"],
+            "args": ["3d_fullres", "UniSeg_Trainer", "20", "0", "-exp_name", "TaskPromptFeatureExtractor"],
             "env": {
                 "CUDA_VISIBLE_DEVICES": "0",
                 "nnUNet_n_proc_DA": "12"

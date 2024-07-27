@@ -97,7 +97,7 @@ class GDL(nn.Module):
         return -dc
 
 
-def get_tp_fp_fn_tn(net_output, gt, axes=None, mask=None, square=False):
+def get_tp_fp_fn_tn(net_output, gt, axes=None, mask=None, square=False, do_one_hot=False):
     """
     net_output must be (b, c, x, y(, z)))
     gt must be a label map (shape (b, 1, x, y(, z)) OR shape (b, x, y(, z))) or one hot encoding (b, c, x, y(, z))
@@ -119,7 +119,11 @@ def get_tp_fp_fn_tn(net_output, gt, axes=None, mask=None, square=False):
         if len(shp_x) != len(shp_y):
             gt = gt.view((shp_y[0], 1, *shp_y[1:]))
 
-        if all([i == j for i, j in zip(net_output.shape, gt.shape)]):
+        if do_one_hot:
+            gt = gt.long()
+            y_onehot = torch.zeros(shp_x, device=net_output.device)
+            y_onehot.scatter_(1, gt, 1)
+        elif all([i == j for i, j in zip(net_output.shape, gt.shape)]):
             # if this is the case then gt is probably already a one hot encoding
             y_onehot = gt
         else:
@@ -154,7 +158,7 @@ def get_tp_fp_fn_tn(net_output, gt, axes=None, mask=None, square=False):
 
 
 class SoftDiceLoss(nn.Module):
-    def __init__(self, apply_nonlin=None, batch_dice=False, do_bg=True, smooth=1.):
+    def __init__(self, apply_nonlin=None, batch_dice=False, do_bg=True, smooth=1., do_one_hot=False):
         """
         """
         super(SoftDiceLoss, self).__init__()
@@ -163,6 +167,7 @@ class SoftDiceLoss(nn.Module):
         self.batch_dice = batch_dice
         self.apply_nonlin = apply_nonlin
         self.smooth = smooth
+        self.do_one_hot=do_one_hot
 
     def forward(self, x, y, loss_mask=None):
         shp_x = x.shape
@@ -175,7 +180,7 @@ class SoftDiceLoss(nn.Module):
         if self.apply_nonlin is not None:
             x = self.apply_nonlin(x)
 
-        tp, fp, fn, _ = get_tp_fp_fn_tn(x, y, axes, loss_mask, False)
+        tp, fp, fn, _ = get_tp_fp_fn_tn(x, y, axes, loss_mask, False, do_one_hot=self.do_one_hot)
 
         nominator = 2 * tp + self.smooth
         denominator = 2 * tp + fp + fn + self.smooth

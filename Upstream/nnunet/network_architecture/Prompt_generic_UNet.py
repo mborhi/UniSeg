@@ -11,6 +11,7 @@ from copy import deepcopy
 from torch.distributions import MultivariateNormal, Categorical
 from sklearn.mixture._gaussian_mixture import GaussianMixture
 from nnunet.utilities.gmm import GaussianMixtureModel
+import copy
 
 from nnunet.utilities.sep import kl_divs
 
@@ -23,23 +24,28 @@ class DynamicDistributionModel(nn.Module):
         self.num_components = num_components 
         self.tp_dim = tp_dim
 
-        max_var = 0.01
+        max_var = 0.001
         delta=1-(1e-03)
         # NOTE just use linspace here
-        min_dist = 60. #self.distance_bounds(k=num_components, delta=delta, max_var=max_var*100)
-        unscaled_means = torch.arange(0, num_components*min_dist, min_dist, requires_grad=False)[:, None] # for feature dim == 1
-        # scale to [-1, 1]^{feature_space_dim}
-        unscaled_means_norms = torch.norm(unscaled_means, dim=1)
-        max_norm = torch.max(unscaled_means_norms)
+        min_dist = 100. #self.distance_bounds(k=num_components, delta=delta, max_var=max_var*100)
+        # Multivariate
+        unscaled_means = torch.stack([min_dist * torch.randint(0, num_components, size=(feature_space_dim,)) for _ in range(num_components)])
+        max_norm = torch.max(torch.norm(unscaled_means, dim=1, p=2))
         self.means = unscaled_means / max_norm
+        # self.means = torch.linspace(0, 1, num_components, requires_grad=False)[:, None]
+        min_dist = torch.cdist(self.means, self.means, p=2).fill_diagonal_(torch.inf).min().item()
         
-        self.vars = torch.full_like(self.means, fill_value=max_var, requires_grad=False)
+        # self.vars = torch.full_like(self.means, fill_value=max_var, requires_grad=False)
+        self.vars = torch.stack([
+            max_var * torch.eye(feature_space_dim, dtype=self.means.dtype) for _ in range(num_components)
+        ])
         # self.vars = (unscaled_vars - 1e-05) / (1e-03 - 1e-05)
+        self.input_vars = max_var * torch.ones((1, num_components), dtype=self.means.dtype)
 
         print(f"initial means: {self.means}")
         print(f"initial vars: {self.vars}")
 
-        self.min_dist = min_dist / max_norm.item()
+        self.min_dist = min_dist#min_dist / max_norm.item()
 
         hidden_dim = 1000
         
@@ -116,8 +122,9 @@ class DynamicDistributionModel(nn.Module):
                 self.means = self.means.to(device=x.device)
                 self.vars = self.vars.to(device=x.device)
             
-            input_means = self.means.permute(1, 0).repeat(x.size(0), 1).detach().to(device=x.device)
-            input_vars = self.vars.permute(1, 0).repeat(x.size(0), 1).detach().to(device=x.device)
+            input_means = self.means.reshape(-1)[None, :].repeat(x.size(0), 1).detach().to(device=x.device)
+            # input_vars = self.vars.permute(1, 0).repeat(x.size(0), 1).detach().to(device=x.device)
+            input_vars = self.input_vars.repeat(x.size(0), 1).detach().to(device=x.device)
             task_id = task_id.repeat(x.size(0), 1)
             
             input = torch.cat((input_means, input_vars, task_id, x), -1)
@@ -436,7 +443,7 @@ class UniSeg_model(Generic_UNet):
             "identity": nn.Identity()
         })
         
-        feature_space_dim = 1
+        feature_space_dim = 128
         self.channel_reduction = nn.Conv3d(num_classes, feature_space_dim, 1, 1, 0, 1, 1, seg_output_use_bias)
         self.final_tanh = nn.Tanh()
 
@@ -466,13 +473,22 @@ class UniSeg_model(Generic_UNet):
 
         for u in range(len(self.tu)):
             x = self.tu[u](x)
+            assert x.isnan().count_nonzero() == 0 
             x = torch.cat((x, skips[-(u + 1)]), dim=1)
+            assert x.isnan().count_nonzero() == 0 
             x = self.conv_blocks_localization[u](x)
-            seg_outputs.append(self.final_nonlin(self.seg_outputs[u](x)))
+            assert x.isnan().count_nonzero() == 0 
+            # x = 
+            assert x.isnan().count_nonzero() == 0 
+            # seg_outputs.append(self.final_nonlin(self.seg_outputs[u](x))) # NOTE
+            seg_outputs.append(x)
+            
 
-        
+        assert x.isnan().count_nonzero() == 0 
         # final_out = self.final_tanh(seg_outputs[-1].mean(dim=1, keepdim=True))
-        final_out = self.final_tanh(self.channel_reduction(seg_outputs[-1]))
+        # final_out = F.normalize(self.final_tanh(self.channel_reduction(seg_outputs[-1])), dim=1)
+        # final_out = self.final_tanh(self.channel_reduction(seg_outputs[-1]))
+        final_out = self.final_tanh(seg_outputs[-1])
         seg_outputs[-1] = final_out
 
         if get_prompt:
@@ -565,8 +581,9 @@ class TaskPromptFeatureExtractor(SegmentationNetwork):
 
         self.do_ds = False
 
-        self.queue_min = 51
+        self.queue_min = 1
         self.gmm_fitted = False
+        self.feature_space_gmm = None
 
 
     def init_gmms(self):
@@ -574,15 +591,19 @@ class TaskPromptFeatureExtractor(SegmentationNetwork):
 
         for i in range(self.num_tasks):
             self.gaussian_mixtures[i].means_ = means[i].detach().cpu().numpy()
-            self.gaussian_mixtures[i].covariances_ = vars[i].detach().cpu().numpy().item() * np.eye(self.feature_space_dim)
+            self.gaussian_mixtures[i].covariances_ = vars[i].detach().cpu().numpy()#.item() * np.eye(self.feature_space_dim)
     
 
     def train_gmms(self):
+        if not self.gmm_fitted :
+            self.init_gmms()
+            self.gmm_fitted = True
+
         # Train using queue
         trained_indices = []
         for t in range(self.num_tasks):
             task_queue = self.feature_space_qs[t] 
-            if len(task_queue) <= self.queue_min:
+            if len(task_queue) < self.queue_min:
                 continue
             task_queue = torch.vstack(task_queue).detach().cpu().numpy()
             self.gaussian_mixtures[t].fit(task_queue)
@@ -602,13 +623,13 @@ class TaskPromptFeatureExtractor(SegmentationNetwork):
                 mean_t = mean_t.cuda()
                 cov_t = cov_t.cuda()
                 wandb.log({
-                    f'gmm_mean_{t}': mean_t.item(), 
-                    f'gmm_var_{t}': cov_t.item(), 
+                    f'gmm_mean_{t}': mean_t,#.item(), 
+                    f'gmm_var_{t}': cov_t,#.item(), 
                     f'gmm_lower_bound_{t}': self.gaussian_mixtures[t].lower_bound_,
                 })
 
-            if len(cov_t.shape) == 2:
-                cov_t = cov_t.unsqueeze(0).repeat(mean_t.size(0), 1, 1)
+            # if len(cov_t.shape) == 2:
+            #     cov_t = cov_t.unsqueeze(0).repeat(mean_t.size(0), 1, 1)
 
             component_distributions.append(MultivariateNormal(mean_t, cov_t))
 
@@ -633,8 +654,8 @@ class TaskPromptFeatureExtractor(SegmentationNetwork):
         comp_dists = []
         for t in range(self.num_tasks):
             cov_t = vars[t]
-            if len(cov_t.shape) != 3:
-                cov_t = cov_t.unsqueeze(0).repeat(means[t].size(0), 1, 1)
+            # if len(cov_t.shape) != 3:
+            #     cov_t = cov_t.unsqueeze(0).repeat(means[t].size(0), 1, 1)
             
             comp_dists.append(MultivariateNormal(means[t], cov_t))
 
@@ -662,8 +683,8 @@ class TaskPromptFeatureExtractor(SegmentationNetwork):
             # Flatten
             flat_feat_extracts = self.task_prompt_module_embeddings.reshape(x.size(0), -1)
 
-            # mus, sigs = self.dynamic_dist(flat_feat_extracts, tc_inds, with_momentum_update=True)
-            mus, sigs = self.dynamic_dist.get_mean_var()
+            mus, sigs = self.dynamic_dist(flat_feat_extracts, tc_inds, with_momentum_update=True)
+            # mus, sigs = self.dynamic_dist.get_mean_var()
             # Plot means, vars
             for t in range(self.num_tasks): 
                 wandb.log({f'mean[{t}]': mus[t], f'vars[{t}]': sigs[t]})
@@ -682,9 +703,14 @@ class TaskPromptFeatureExtractor(SegmentationNetwork):
     def segment(self, features: torch.Tensor):
 
         b = features.size(0)
-        bview_features = features.reshape(b, -1, self.feature_space_dim)
+        h, w, d = tuple(features.shape[2:])
+        # bview_features = features.reshape(b, -1, self.feature_space_dim)
+        bview_features = features.permute(0, 2, 3, 4, 1).reshape(b, -1, self.feature_space_dim)
 
-        segmentation = self.feature_space_gmm.classify(bview_features).reshape(features.size())
+        # segmentation = self.feature_space_gmm.classify(bview_features).reshape(features.size())
+        feature_log_probs = self.feature_space_gmm.score(bview_features)
+        feature_log_probs = feature_log_probs.reshape(b, h, w, d, len(self.feature_space_gmm.component_distributions)).permute(0, 4, 1, 2, 3)
+        segmentation = torch.argmax(feature_log_probs, dim=1)
 
         return segmentation
 
@@ -696,16 +722,37 @@ class TaskPromptFeatureExtractor(SegmentationNetwork):
             segmentation[msk] = tc_inds_to_cls[val.item()]
 
         return segmentation
+
+    def segment_from_dists(self, x, dists, tc_inds_to_cls):
+        categorical = Categorical(torch.ones(len(dists), device=x.device) / len(dists))
+        sampled_feature_space_gmm = GaussianMixtureModel(categorical=categorical, component_distributions=dists)
+        feature_space_gmm = None
+        if self.feature_space_gmm is not None:
+            feature_space_gmm = copy.copy(self.feature_space_gmm)#.detach().clone()
+
+        self.feature_space_gmm = sampled_feature_space_gmm
+
+        segmentaiton = self.segment(x)
+        std_segmentation = self.standardize_segmentation(segmentaiton, tc_inds_to_cls)
+        
+        self.feature_space_gmm = feature_space_gmm
+        
+        return std_segmentation
+
+    def ood_classify(self, x):
+        pass 
+
     
     def update_queues(self, feature_extracts, tc_inds):
-        updated_size = 50
+        update_size = 100
         # create mask of accurate feature extractions (highest log-likelihood w.r.t target Gauss.)
         for i, task_id in enumerate(tc_inds):
-            idxs = torch.randint(0, feature_extracts[i].shape[-1], (updated_size,))
-            rand_elements = feature_extracts[i][idxs]
+            idxs = torch.randint(0, feature_extracts[i].shape[-1], (update_size,))
+            feature_extracts_ = feature_extracts[i].detach().clone().to(device=feature_extracts[i].device)
+            rand_elements = feature_extracts_[:, idxs]
             # Enqueue and Dequeue
-            if len(self.feature_space_qs[task_id]) + updated_size > self.queue_size:
-                for i in range(len(self.feature_space_qs[task_id]) + updated_size - self.queue_size):
+            if len(self.feature_space_qs[task_id]) + update_size > self.queue_size:
+                for i in range(len(self.feature_space_qs[task_id]) + update_size - self.queue_size):
                     self.feature_space_qs[task_id].pop(0)
             
             self.feature_space_qs[task_id].append(rand_elements.reshape(-1, self.feature_space_dim))
@@ -716,6 +763,6 @@ class TaskPromptFeatureExtractor(SegmentationNetwork):
         for i in range(self.num_tasks):
             self.feature_space_qs[i] = []
 
-
     def get_mean_var(self):
         return self.dynamic_dist.get_mean_var()
+
