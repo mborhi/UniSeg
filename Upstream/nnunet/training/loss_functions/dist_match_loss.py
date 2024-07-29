@@ -47,22 +47,48 @@ class DynamicDistMatchingLoss(nn.Module):
         total_gnlll = F.gaussian_nll_loss(mts, features, vts)
         return total_gnlll
 
-    def vec_gnlll(self, features_cls_extractions, means, covs, indices):
+    def vec_gnlll(self, features_cls_extractions, means, covs, indices, handle_nan=False, return_est_dists=False):
         """
         features_cls_extractions: list[torch.tensor(N, d)]
         means: torch.tensor(k, d)
         covs: torch.tensor(k, d, d)
         """
+        if return_est_dists: est_dists = []
         total_loss = 0 
 
         for i, ind in enumerate(indices):
             feature_extraction = features_cls_extractions[i]
+
+            num_nan = feature_extraction.isnan().count_nonzero().item()
+
+            assert num_nan == 0, f"NaN values [{num_nan}] in predicted distribution."
             target_mean = means[ind].repeat(feature_extraction.size(0), 1)
             target_cov = covs[ind].repeat(feature_extraction.size(0), 1)
             # homeoscedastic assumption 
             gnlll = F.gaussian_nll_loss(target_mean, feature_extraction, target_cov, reduction='mean')
             total_loss = total_loss + self.class_weights[i] * gnlll
 
+            if return_est_dists:
+                if handle_nan:
+                    pred_dist_mean = torch.mean(feature_extraction[~feature_extraction.isnan()])
+                    pred_dist_var = (feature_extraction - pred_dist_mean).square()
+                    pred_dist_var = torch.mean(pred_dist_var[~pred_dist_var.isnan()]) + 0.0001 # numerical stability
+                    # pred_dist_var = torch.var(feature_extraction) + 0.0001 # numerical stability
+                else:
+                    pred_dist_mean, pred_dist_var = torch.mean(feature_extraction, 1), torch.cov(feature_extraction)
+
+                # Clip variance if too large
+                pred_dist_var = torch.clamp(pred_dist_var, max=1000.0) + torch.eye(pred_dist_var.shape[-1], device=pred_dist_var.device) * 1e-04
+
+                
+                # NOTE Need to generalize to Multivaraite
+                # pred_dist = Normal(pred_dist_mean.unsqueeze(-1), torch.sqrt(pred_dist_var).unsqueeze(-1)) 
+                # target_dist = Normal(means[task_label], torch.sqrt(covs[task_label]))
+                pred_dist = MultivariateNormal(pred_dist_mean, pred_dist_var) 
+
+                est_dists.append(pred_dist)
+
+        if return_est_dists: return total_loss, est_dists
         
         return total_loss
 
@@ -150,7 +176,28 @@ class DynamicDistMatchingLoss(nn.Module):
         if return_est_dists: return total_loss, est_dists
         
         return total_loss
+    
+    def forward_gnlll(self, pred_dists, means, covs, indices, handle_nan=False, return_est_dists=False, with_sep_loss=True):
+        total_gnlll = self.vec_gnlll(pred_dists, means, covs, indices, handle_nan=handle_nan, return_est_dists=return_est_dists)
 
+        if return_est_dists:
+            total_gnlll, est_dists = total_gnlll
+
+        # sep_loss = self.get_separability_loss(means[indices, :])
+        if with_sep_loss:
+            sep_loss = self.get_sep_loss(means[indices, :])
+        else:
+            sep_loss = 0
+        
+        # total_loss = total_kl_div - sep_loss
+        total_loss = total_gnlll + sep_loss
+        
+        print(f"total loss: {total_loss} = total kl div ({total_gnlll}) + sep loss ({sep_loss})")
+        wandb.log({"gnlll": total_gnlll, "sep_loss": sep_loss})
+        
+        if return_est_dists: return total_loss, est_dists
+        
+        return total_loss
 
 
 if __name__ == "__main__":
