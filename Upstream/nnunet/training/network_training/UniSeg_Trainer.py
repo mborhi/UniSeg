@@ -51,10 +51,10 @@ class UniSeg_Trainer(nnUNetTrainerV2):
         #     4: [0, 9], 
         #     5: [0, 10], 
         #     6: [0, 11], 
-        #     7: [0, 12], 
-        #     8: [0, 13], 
-        #     9: [0, 14, 15, 16, 17], 
-        #     10: [0, 18]
+        #     # 7: [0, 12], 
+        #     # 8: [0, 13], 
+        #     # 9: [0, 14, 15, 16, 17], 
+        #     # 10: [0, 18]
         # }
         self.class_lst_task_id_mapping = {}
         self.class_lst_to_std_mapping = {}
@@ -287,8 +287,8 @@ class UniSeg_Trainer(nnUNetTrainerV2):
                 del data
                 # l = self.loss(output, target)
                 # l = self.loss(extractions, mus, sigs, tc_inds)
-                # l, est_dists = self.loss(extractions, mus, sigs, tc_inds, return_est_dists=True, with_sep_loss=self.network.output_target_est)
-                l, est_dists = self.loss.forward_gnlll(extractions, mus, sigs, tc_inds, return_est_dists=True, with_sep_loss=self.network.output_target_est)
+                l, est_dists = self.loss(extractions, mus, sigs, tc_inds, return_est_dists=True, with_sep_loss=self.network.output_target_est)
+                # l, est_dists = self.loss.forward_gnlll(output, extractions, mus, sigs, target[0], tc_inds, return_est_dists=True, with_sep_loss=self.network.output_target_est)
                 # l = self.loss.gnlll(output, mus, sigs, target[0], tc_inds)
                 # l = self.loss.vec_gnlll(extractions, mus, sigs, tc_inds)
                 # print(f"gnll: {l.item()}")
@@ -296,7 +296,9 @@ class UniSeg_Trainer(nnUNetTrainerV2):
 
                 # Test the dice score:
                 est_seg = self.network.segment_from_dists(output, est_dists, self.class_lst_to_std_mapping)
-                dc_score = self.dc_loss(est_seg.unsqueeze(1), target[0])
+                est_seg = torch.nn.functional.one_hot(est_seg, self.task_class[int(task_id[0])]).permute(0, 4, 1, 2, 3)
+                # dc_score = self.dc_loss(est_seg.unsqueeze(1), target[0])
+                dc_score = self.dc_loss(est_seg, target[0])
                 print(f"Dice Score: {-dc_score.item()}")
                 if do_backprop:
                     wandb.log({"train_dc": -dc_score.item()})

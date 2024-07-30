@@ -15,7 +15,19 @@ class DynamicDistMatchingLoss(nn.Module):
         self.min_dist = min_dist
 
         self.margin = torch.tensor(0.01)
-        self.class_weights = [0.5, 2]
+        self.class_weights = [0.5, 2, 2]
+
+
+
+    def multi_class_gnlll(self, features, means, covs, gt_seg, indices):
+        """
+        features: torch.tensor[B, F, V1, V2, V3]
+        gt_seg: torch.tensor[B]
+        """
+        num_nan = features.isnan().count_nonzero().item()
+        assert num_nan == 0, f"NaN values [{num_nan}] in predicted distribution."
+
+
 
     def gnlll(self, features, means, covs, gt_seg, indices):
         num_nan = features.isnan().count_nonzero().item()
@@ -36,7 +48,8 @@ class DynamicDistMatchingLoss(nn.Module):
             for i, ind in enumerate(indices):
                 msk = (gt_seg[b] == i)[0, :]
                 mt[msk] = means[ind]
-                vt[msk] = covs[ind]
+                # vt[msk] = covs[ind]
+                vt[msk] = torch.full_like(means[ind], fill_value=covs[ind][0, 0])
             mts.append(mt.permute(3, 0, 1, 2))
             vts.append(vt.permute(3, 0, 1, 2))
 
@@ -44,7 +57,15 @@ class DynamicDistMatchingLoss(nn.Module):
         vts = torch.stack(vts).to(device=features.device)
 
         # typically: network_predict: input, var | target --> network_predict: pred_dist | means*, var*
-        total_gnlll = F.gaussian_nll_loss(mts, features, vts)
+        l = F.gaussian_nll_loss(mts, features, vts, reduction='none')
+        
+        # Reduce by mean over task
+        total_gnlll = 0
+        for b in range(batch_size):
+            for i, ind in enumerate(indices):
+                msk = (gt_seg[b] == i)[0, :]
+                total_gnlll = total_gnlll + l[b][:,msk].mean()
+        
         return total_gnlll
 
     def vec_gnlll(self, features_cls_extractions, means, covs, indices, handle_nan=False, return_est_dists=False):
@@ -57,18 +78,20 @@ class DynamicDistMatchingLoss(nn.Module):
         total_loss = 0 
 
         for i, ind in enumerate(indices):
-            feature_extraction = features_cls_extractions[i]
+            feature_extraction = features_cls_extractions[i].permute(1, 0)
 
             num_nan = feature_extraction.isnan().count_nonzero().item()
 
             assert num_nan == 0, f"NaN values [{num_nan}] in predicted distribution."
-            target_mean = means[ind].repeat(feature_extraction.size(0), 1)
-            target_cov = covs[ind].repeat(feature_extraction.size(0), 1)
+            target_mean = means[ind].repeat(1, 1)
+            target_cov = covs[ind]#.repeat(feature_extraction.size(0), 1)
+            var = torch.full_like(target_mean, fill_value=target_cov[0, 0])
             # homeoscedastic assumption 
-            gnlll = F.gaussian_nll_loss(target_mean, feature_extraction, target_cov, reduction='mean')
+            gnlll = F.gaussian_nll_loss(target_mean, feature_extraction, var, reduction='mean')
             total_loss = total_loss + self.class_weights[i] * gnlll
 
             if return_est_dists:
+                feature_extraction = feature_extraction.permute(1, 0)
                 if handle_nan:
                     pred_dist_mean = torch.mean(feature_extraction[~feature_extraction.isnan()])
                     pred_dist_var = (feature_extraction - pred_dist_mean).square()
@@ -177,11 +200,12 @@ class DynamicDistMatchingLoss(nn.Module):
         
         return total_loss
     
-    def forward_gnlll(self, pred_dists, means, covs, indices, handle_nan=False, return_est_dists=False, with_sep_loss=True):
-        total_gnlll = self.vec_gnlll(pred_dists, means, covs, indices, handle_nan=handle_nan, return_est_dists=return_est_dists)
+    def forward_gnlll(self, output, pred_dists, means, covs, gt_seg, indices, handle_nan=False, return_est_dists=False, with_sep_loss=True):
+        # total_gnlll = self.vec_gnlll(pred_dists, means, covs, indices, handle_nan=handle_nan, return_est_dists=return_est_dists)
+        total_gnlll = self.gnlll(output, means, covs, gt_seg, indices)
 
         if return_est_dists:
-            total_gnlll, est_dists = total_gnlll
+            _, est_dists = self.get_distribution_loss(pred_dists, means, covs, indices, handle_nan=handle_nan, return_est_dists=True)
 
         # sep_loss = self.get_separability_loss(means[indices, :])
         if with_sep_loss:

@@ -168,7 +168,7 @@ def main():
     trainer.initialize(not validation_only)
     init_means, init_vars = trainer.network.dynamic_dist.get_mean_var()
     wandb.init(
-        project="Target-Distribution-Matching-UniSeg-Single-Taks-HD",
+        project="Target-Distribution-Matching-UniSeg-Single-Task-HD",
         config={
             "exp_name": exp_name,
             "debug": False,
@@ -176,7 +176,7 @@ def main():
             "initial_means": init_means, 
             "initial_vars": init_vars, 
             "feature_space_dim": 32, 
-            "task": "prostate"
+            "task": "Prostate"
         }
     )
 
