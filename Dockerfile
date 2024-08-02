@@ -36,10 +36,12 @@ RUN pip install nnUnet && \
     pip install nibabel && \
     pip install numpy && \
     pip install tqdm && \
-    pip install SimpleITK
+    pip install SimpleITK && \
+    pip install wandb
 
 RUN mkdir /output
 RUN mkdir /data
+RUN mkdir /data_ped_brats
 # Set default working directory
 WORKDIR /workspace
 
