@@ -30,7 +30,7 @@ from nnunet.training.loss_functions.dist_match_loss import DynamicDistMatchingLo
 from nnunet.training.loss_functions.dice_loss import DC_and_CE_loss, SoftDiceLoss
 from nnunet.utilities.sep import get_task_set, extract_task_set
 import copy 
-import wandb
+# import wandb
 
 class UniSeg_Trainer(nnUNetTrainerV2):
     def __init__(self, plans_file, fold, output_folder=None, dataset_directory=None, batch_dice=True, stage=None,
@@ -40,22 +40,22 @@ class UniSeg_Trainer(nnUNetTrainerV2):
         self.max_num_epochs = 1000
         self.task = {"live":0, "kidn":1, "hepa":2, "panc":3, "colo":4, "lung":5, "sple":6, "sub-":7, "pros":8, "BraT":9, "PETC": 10}
         self.task_class = {0: 3, 1: 3, 2: 3, 3: 3, 4: 2, 5: 2, 6: 2, 7: 2, 8: 2, 9: 4, 10: 2}
-        self.task_id_class_lst_mapping = {
-            8: [0, 1], 
-        }
         # self.task_id_class_lst_mapping = {
-        #     0: [0, 1, 2], 
-        #     1: [0, 3, 4], 
-        #     2: [0, 5, 6], 
-        #     3: [0, 7, 8], 
-        #     4: [0, 9], 
-        #     5: [0, 10], 
-        #     6: [0, 11], 
-        #     7: [0, 12], 
-        #     8: [0, 13], 
-        #     9: [0, 14, 15, 16, 17], 
-        #     10: [0, 18]
+        #     8: [0, 1], 
         # }
+        self.task_id_class_lst_mapping = {
+            0: [0, 1, 2], 
+            1: [0, 3, 4], 
+            2: [0, 5, 6], 
+            3: [0, 7, 8], 
+            4: [0, 9], 
+            5: [0, 10], 
+            6: [0, 11], 
+            # 7: [0, 12], 
+            # 8: [0, 13], 
+            # 9: [0, 14, 15, 16, 17], 
+            # 10: [0, 18]
+        }
         self.class_lst_task_id_mapping = {}
         self.class_lst_to_std_mapping = {}
         for task_id, cls_lst in self.task_id_class_lst_mapping.items():
@@ -106,7 +106,7 @@ class UniSeg_Trainer(nnUNetTrainerV2):
         net_nonlin = nn.LeakyReLU
         net_nonlin_kwargs = {'negative_slope': 1e-2, 'inplace': True}
         # NOTE
-        self.base_num_features = 32
+        self.base_num_features = 64
         self.uniseg_network = UniSeg_model(self.patch_size, self.total_task_num, [1, 2, 4], self.base_num_features, self.num_classes,
                                     len(self.net_num_pool_op_kernel_sizes),
                                     self.conv_per_stage, 2, conv_op, norm_op, norm_op_kwargs, dropout_op,
@@ -118,7 +118,7 @@ class UniSeg_Trainer(nnUNetTrainerV2):
         # self.network.inference_apply_nonlin = softmax_helper
         self.uniseg_network.inference_apply_nonlin = lambda x: x
         queue_size = 5000 
-        self.feature_space_dim = 32
+        self.feature_space_dim = 64
         num_components = len(self.class_lst_to_std_mapping.keys())
         self.network = TaskPromptFeatureExtractor(feature_space_dim=self.feature_space_dim, feature_extractor=self.uniseg_network, num_tasks=num_components, queue_size=queue_size, momentum=0.999)
         if torch.cuda.is_available():
@@ -126,7 +126,7 @@ class UniSeg_Trainer(nnUNetTrainerV2):
             self.network.dynamic_dist.means = self.network.dynamic_dist.means.cuda()
             self.network.dynamic_dist.vars = self.network.dynamic_dist.vars.cuda()
         self.distance_bounds = self.network.get_distance_bounds()
-        print(f"Component location minimum separation: {self.distance_bounds} ")
+        self.print_to_log_file(f"Component location minimum separation: {self.distance_bounds}")
 
     def initialize(self, training=True, force_load_plans=False):
         """
@@ -288,20 +288,26 @@ class UniSeg_Trainer(nnUNetTrainerV2):
                 # l = self.loss(output, target)
                 # l = self.loss(extractions, mus, sigs, tc_inds)
                 # l, est_dists = self.loss(extractions, mus, sigs, tc_inds, return_est_dists=True, with_sep_loss=self.network.output_target_est)
-                l, est_dists = self.loss.forward_gnlll(extractions, mus, sigs, tc_inds, return_est_dists=True, with_sep_loss=self.network.output_target_est)
+                l, est_dists = self.loss.forward_gnlll(output, extractions, mus, sigs, target[0], tc_inds, return_est_dists=True, with_sep_loss=self.network.output_target_est)
                 # l = self.loss.gnlll(output, mus, sigs, target[0], tc_inds)
                 # l = self.loss.vec_gnlll(extractions, mus, sigs, tc_inds)
                 # print(f"gnll: {l.item()}")
-                wandb.log({"loss": l.item()})
+                # wandb.log({"loss": l.item()})
+                self.print_to_log_file(f"loss: {l.item()}")
 
                 # Test the dice score:
-                est_seg = self.network.segment_from_dists(output, est_dists, self.class_lst_to_std_mapping)
-                dc_score = self.dc_loss(est_seg.unsqueeze(1), target[0])
-                print(f"Dice Score: {-dc_score.item()}")
-                if do_backprop:
-                    wandb.log({"train_dc": -dc_score.item()})
-                else:
-                    wandb.log({"val_dc": -dc_score.item()})
+                with torch.no_grad():
+                    est_seg = self.network.segment_from_dists(output, est_dists, self.class_lst_to_std_mapping)
+                    est_seg = torch.nn.functional.one_hot(est_seg, self.task_class[int(task_id[0])]).permute(0, 4, 1, 2, 3)
+                    # dc_score = self.dc_loss(est_seg.unsqueeze(1), target[0])
+                    dc_score = self.dc_loss(est_seg, target[0])
+                    # self.print_to_log_file(f"Dice Score: {-dc_score.item()}")
+                    if do_backprop:
+                        # wandb.log({"train_dc": -dc_score.item()})
+                        self.print_to_log_file(f"train_dc {-dc_score.item()}")
+                    else:
+                        # wandb.log({"val_dc": -dc_score.item()})
+                        self.print_to_log_file(f"val_dc {-dc_score.item()}")
 
 
                 # TODO make method of network; features = network output

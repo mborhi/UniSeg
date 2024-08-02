@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 from torch.distributions import Distribution, Normal, MultivariateNormal, kl_divergence
 import torch.nn.functional as F
-import wandb 
+# import wandb 
 
 class DynamicDistMatchingLoss(nn.Module):
 
@@ -15,7 +15,19 @@ class DynamicDistMatchingLoss(nn.Module):
         self.min_dist = min_dist
 
         self.margin = torch.tensor(0.01)
-        self.class_weights = [0.5, 2]
+        self.class_weights = [0.5, 2, 2, 2]
+
+
+
+    def multi_class_gnlll(self, features, means, covs, gt_seg, indices):
+        """
+        features: torch.tensor[B, F, V1, V2, V3]
+        gt_seg: torch.tensor[B]
+        """
+        num_nan = features.isnan().count_nonzero().item()
+        assert num_nan == 0, f"NaN values [{num_nan}] in predicted distribution."
+
+
 
     def gnlll(self, features, means, covs, gt_seg, indices):
         num_nan = features.isnan().count_nonzero().item()
@@ -36,7 +48,8 @@ class DynamicDistMatchingLoss(nn.Module):
             for i, ind in enumerate(indices):
                 msk = (gt_seg[b] == i)[0, :]
                 mt[msk] = means[ind]
-                vt[msk] = covs[ind]
+                # vt[msk] = covs[ind]
+                vt[msk] = torch.full_like(means[ind], fill_value=covs[ind][0, 0])
             mts.append(mt.permute(3, 0, 1, 2))
             vts.append(vt.permute(3, 0, 1, 2))
 
@@ -44,8 +57,27 @@ class DynamicDistMatchingLoss(nn.Module):
         vts = torch.stack(vts).to(device=features.device)
 
         # typically: network_predict: input, var | target --> network_predict: pred_dist | means*, var*
-        total_gnlll = F.gaussian_nll_loss(mts, features, vts)
-        return total_gnlll
+        total_gnlll = F.gaussian_nll_loss(mts, features, vts, reduction='none')
+        
+        # Reduce by mean over task
+        # l = 0
+        # for b in range(batch_size):
+        #     for i, ind in enumerate(indices):
+        #         msk = (gt_seg[b] == i)[0, :]
+        #         l = l + total_gnlll[b][:,msk].mean()
+
+        l = 0
+        for i, ind in enumerate(indices):
+            b_sum = 0
+            num_elems = 0
+            for b in range(batch_size):
+                msk = (gt_seg[b] == i)[0, :]
+                b_sum += total_gnlll[b][:,msk].sum()
+                num_elems += total_gnlll[b][:,msk].count_nonzero()
+
+            l = l + self.class_weights[i] * (b_sum / num_elems)
+        
+        return l
 
     def vec_gnlll(self, features_cls_extractions, means, covs, indices, handle_nan=False, return_est_dists=False):
         """
@@ -57,18 +89,20 @@ class DynamicDistMatchingLoss(nn.Module):
         total_loss = 0 
 
         for i, ind in enumerate(indices):
-            feature_extraction = features_cls_extractions[i]
+            feature_extraction = features_cls_extractions[i].permute(1, 0)
 
             num_nan = feature_extraction.isnan().count_nonzero().item()
 
             assert num_nan == 0, f"NaN values [{num_nan}] in predicted distribution."
-            target_mean = means[ind].repeat(feature_extraction.size(0), 1)
-            target_cov = covs[ind].repeat(feature_extraction.size(0), 1)
+            target_mean = means[ind].repeat(1, 1)
+            target_cov = covs[ind]#.repeat(feature_extraction.size(0), 1)
+            var = torch.full_like(target_mean, fill_value=target_cov[0, 0])
             # homeoscedastic assumption 
-            gnlll = F.gaussian_nll_loss(target_mean, feature_extraction, target_cov, reduction='mean')
+            gnlll = F.gaussian_nll_loss(target_mean, feature_extraction, var, reduction='mean')
             total_loss = total_loss + self.class_weights[i] * gnlll
 
             if return_est_dists:
+                feature_extraction = feature_extraction.permute(1, 0)
                 if handle_nan:
                     pred_dist_mean = torch.mean(feature_extraction[~feature_extraction.isnan()])
                     pred_dist_var = (feature_extraction - pred_dist_mean).square()
@@ -171,17 +205,18 @@ class DynamicDistMatchingLoss(nn.Module):
         total_loss = total_kl_div + sep_loss
         
         print(f"total loss: {total_loss} = total kl div ({total_kl_div}) + sep loss ({sep_loss})")
-        wandb.log({"kl_div": total_kl_div, "sep_loss": sep_loss})
+        # wandb.log({"kl_div": total_kl_div, "sep_loss": sep_loss})
         
         if return_est_dists: return total_loss, est_dists
         
         return total_loss
     
-    def forward_gnlll(self, pred_dists, means, covs, indices, handle_nan=False, return_est_dists=False, with_sep_loss=True):
-        total_gnlll = self.vec_gnlll(pred_dists, means, covs, indices, handle_nan=handle_nan, return_est_dists=return_est_dists)
+    def forward_gnlll(self, output, pred_dists, means, covs, gt_seg, indices, handle_nan=False, return_est_dists=False, with_sep_loss=True):
+        # total_gnlll = self.vec_gnlll(pred_dists, means, covs, indices, handle_nan=handle_nan, return_est_dists=return_est_dists)
+        total_gnlll = self.gnlll(output, means, covs, gt_seg, indices)
 
         if return_est_dists:
-            total_gnlll, est_dists = total_gnlll
+            _, est_dists = self.get_distribution_loss(pred_dists, means, covs, indices, handle_nan=handle_nan, return_est_dists=True)
 
         # sep_loss = self.get_separability_loss(means[indices, :])
         if with_sep_loss:
@@ -192,8 +227,8 @@ class DynamicDistMatchingLoss(nn.Module):
         # total_loss = total_kl_div - sep_loss
         total_loss = total_gnlll + sep_loss
         
-        print(f"total loss: {total_loss} = total kl div ({total_gnlll}) + sep loss ({sep_loss})")
-        wandb.log({"gnlll": total_gnlll, "sep_loss": sep_loss})
+        print(f"total loss: {total_loss} = total gnlll div ({total_gnlll}) + sep loss ({sep_loss})")
+        # wandb.log({"gnlll": total_gnlll, "sep_loss": sep_loss})
         
         if return_est_dists: return total_loss, est_dists
         
