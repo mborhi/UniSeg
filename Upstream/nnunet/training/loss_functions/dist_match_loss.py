@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 from torch.distributions import Distribution, Normal, MultivariateNormal, kl_divergence
 import torch.nn.functional as F
-import wandb 
+# import wandb 
 
 class DynamicDistMatchingLoss(nn.Module):
 
@@ -15,7 +15,7 @@ class DynamicDistMatchingLoss(nn.Module):
         self.min_dist = min_dist
 
         self.margin = torch.tensor(0.01)
-        self.class_weights = [0.5, 2, 2]
+        self.class_weights = [0.5, 2, 2, 2]
 
 
 
@@ -57,16 +57,27 @@ class DynamicDistMatchingLoss(nn.Module):
         vts = torch.stack(vts).to(device=features.device)
 
         # typically: network_predict: input, var | target --> network_predict: pred_dist | means*, var*
-        l = F.gaussian_nll_loss(mts, features, vts, reduction='none')
+        total_gnlll = F.gaussian_nll_loss(mts, features, vts, reduction='none')
         
         # Reduce by mean over task
-        total_gnlll = 0
-        for b in range(batch_size):
-            for i, ind in enumerate(indices):
+        # l = 0
+        # for b in range(batch_size):
+        #     for i, ind in enumerate(indices):
+        #         msk = (gt_seg[b] == i)[0, :]
+        #         l = l + total_gnlll[b][:,msk].mean()
+
+        l = 0
+        for i, ind in enumerate(indices):
+            b_sum = 0
+            num_elems = 0
+            for b in range(batch_size):
                 msk = (gt_seg[b] == i)[0, :]
-                total_gnlll = total_gnlll + l[b][:,msk].mean()
+                b_sum += total_gnlll[b][:,msk].sum()
+                num_elems += total_gnlll[b][:,msk].count_nonzero()
+
+            l = l + self.class_weights[i] * (b_sum / num_elems)
         
-        return total_gnlll
+        return l
 
     def vec_gnlll(self, features_cls_extractions, means, covs, indices, handle_nan=False, return_est_dists=False):
         """
@@ -194,7 +205,7 @@ class DynamicDistMatchingLoss(nn.Module):
         total_loss = total_kl_div + sep_loss
         
         print(f"total loss: {total_loss} = total kl div ({total_kl_div}) + sep loss ({sep_loss})")
-        wandb.log({"kl_div": total_kl_div, "sep_loss": sep_loss})
+        # wandb.log({"kl_div": total_kl_div, "sep_loss": sep_loss})
         
         if return_est_dists: return total_loss, est_dists
         
@@ -216,8 +227,8 @@ class DynamicDistMatchingLoss(nn.Module):
         # total_loss = total_kl_div - sep_loss
         total_loss = total_gnlll + sep_loss
         
-        print(f"total loss: {total_loss} = total kl div ({total_gnlll}) + sep loss ({sep_loss})")
-        wandb.log({"gnlll": total_gnlll, "sep_loss": sep_loss})
+        print(f"total loss: {total_loss} = total gnlll div ({total_gnlll}) + sep loss ({sep_loss})")
+        # wandb.log({"gnlll": total_gnlll, "sep_loss": sep_loss})
         
         if return_est_dists: return total_loss, est_dists
         
