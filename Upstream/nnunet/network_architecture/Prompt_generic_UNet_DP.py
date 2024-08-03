@@ -593,9 +593,9 @@ class TaskPromptFeatureExtractor_DP(SegmentationNetwork):
             self.gaussian_mixtures[i].covariances_ = vars[i].detach().cpu().numpy()#.item() * np.eye(self.feature_space_dim)
     
 
-    def train_gmms(self, feature_space_qs):
+    def train_gmms(self, feature_space_qs, mus, sigs):
         if not self.gmm_fitted :
-            self.init_gmms()
+            self.init_gmms(mus, sigs)
             self.gmm_fitted = True
 
         # Train using queue
@@ -621,11 +621,11 @@ class TaskPromptFeatureExtractor_DP(SegmentationNetwork):
             if torch.cuda.is_available():
                 mean_t = mean_t.cuda()
                 cov_t = cov_t.cuda()
-                wandb.log({
-                    f'gmm_mean_{t}': mean_t,#.item(), 
-                    f'gmm_var_{t}': cov_t,#.item(), 
-                    f'gmm_lower_bound_{t}': self.gaussian_mixtures[t].lower_bound_,
-                })
+                # wandb.log({
+                #     f'gmm_mean_{t}': mean_t,#.item(), 
+                #     f'gmm_var_{t}': cov_t,#.item(), 
+                #     f'gmm_lower_bound_{t}': self.gaussian_mixtures[t].lower_bound_,
+                # })
 
             # if len(cov_t.shape) == 2:
             #     cov_t = cov_t.unsqueeze(0).repeat(mean_t.size(0), 1, 1)
@@ -633,9 +633,10 @@ class TaskPromptFeatureExtractor_DP(SegmentationNetwork):
             component_distributions.append(MultivariateNormal(mean_t, cov_t))
 
         # Determine the KL w.r.t these EM-learned dists and targets
-        learned_target_kls = kl_divs(component_distributions, *self.get_mean_var())
+        learned_target_kls = kl_divs(component_distributions, mus, sigs)
         for i, kl in enumerate(learned_target_kls):
-            wandb.log({f'est_gmm_kl_{trained_indices[i]}': kl.item()})
+            # wandb.log({f'est_gmm_kl_{trained_indices[i]}': kl.item()})
+            pass
 
         # https://discuss.pytorch.org/t/how-to-use-torch-distributions-multivariate-normal-multivariatenormal-in-multi-gpu-mode/135030/3
         # component_distributions = [
@@ -661,32 +662,33 @@ class TaskPromptFeatureExtractor_DP(SegmentationNetwork):
 
         self.feature_space_gmm = GaussianMixtureModel(categorical, comp_dists)
 
-    def forward(self, x, task_id, *tr_args, **tr_kwargs):
-        if self.train:
-            return self.forward_train(x, task_id, *tr_args, **tr_kwargs)
+    def forward(self, x, task_id=None, **tr_kwargs):
+        if self.training:
+            return self.forward_train(x, task_id=task_id, **tr_kwargs)
         else :
-            return self.forward_inference(x, task_id)
+            return self.forward_inference(x, task_id=task_id)
 
 
-    def forward_train(self, x, task_id, gt_seg, num_classes_in_gt):
-        if self.update_target_dist:
+    def forward_train(self, x, task_id=None, gt_seg=None, num_classes_in_gt=None, update_target_dist=False):
+        if update_target_dist:
             features, _, _, feat_extracts, _ = self.feature_extractor(x, task_id, get_prompt=True)
         else:
             features = self.feature_extractor(x, task_id, get_prompt=False)
         norms = features.reshape(features.size(0), -1).norm(dim=1)
         for norm in norms:
-            wandb.log({"output feature space norm (per batch)": norm.item()})
+            # wandb.log({"output feature space norm (per batch)": norm.item()})
+            print(f"output feature space norm (per batch): {norm.item()}")
 
         gt_extractions = [extract_task_set(features, gt_seg, c, keep_dims=True) for c in range(num_classes_in_gt)]
 
-        if self.get_prompt:
+        if update_target_dist:
             flat_feat_extracts = feat_extracts.reshape(x.size(0), -1)
             return features, flat_feat_extracts, gt_extractions
         
         return features, gt_extractions#, mus, sigs
 
-    def forward_inference(self, x, task_id):
-        features, _, _, _, _ = self.feature_extractor(x, task_id, get_prompt=False)
+    def forward_inference(self, x, task_id=None):
+        features = self.feature_extractor(x, task_id, get_prompt=False)
 
         # Use GMM + Bayes' Rule 
         return self.segment(features)
@@ -735,4 +737,10 @@ class TaskPromptFeatureExtractor_DP(SegmentationNetwork):
 
     def ood_classify(self, x):
         pass 
+
+    def set_update_target_dist(self, val):
+        self.update_target_dist = val
+
+    def get_update_target_dist(self):
+        return self.update_target_dist
 

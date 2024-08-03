@@ -665,7 +665,7 @@ class TaskPromptFeatureExtractor(SegmentationNetwork):
         self.feature_space_gmm = GaussianMixtureModel(categorical, comp_dists)
 
     def forward(self, x, task_id, tc_inds):
-        if self.train:
+        if self.training:
             return self.forward_train(x, task_id, tc_inds)
         else :
             return self.forward_inference(x, task_id)
