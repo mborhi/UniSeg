@@ -39,11 +39,18 @@ RUN pip install nnUnet && \
     pip install SimpleITK && \
     pip install wandb
 
+RUN apt-get update && \
+    apt-get upgrade -y && \
+    apt-get install -y git
+
 RUN mkdir /output
 RUN mkdir /data
 RUN mkdir /data_ped_brats
 # Set default working directory
 WORKDIR /workspace
+
+RUN git clone https://github.com/mborhi/UniSeg.git .
+RUN git checkout
 
 COPY . /workspace
 COPY ./Upstream/nnunet /usr/local/lib/python3.8/dist-packages/nnunet
