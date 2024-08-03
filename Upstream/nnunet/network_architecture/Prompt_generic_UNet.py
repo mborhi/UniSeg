@@ -695,7 +695,7 @@ class TaskPromptFeatureExtractor(SegmentationNetwork):
         return features, mus, sigs
 
     def forward_inference(self, x, task_id):
-        features, _, _, _, _ = self.feature_extractor(x, task_id, get_prompt=False)
+        features = self.feature_extractor(x, task_id, get_prompt=False)
 
         # Use GMM + Bayes' Rule 
         return self.segment(features)

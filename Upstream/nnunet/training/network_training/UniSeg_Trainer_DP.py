@@ -38,25 +38,13 @@ class UniSeg_Trainer_DP(nnUNetTrainerV2_DP):
                  unpack_data=True, deterministic=True, num_gpus=2, distribute_batch_size=False, fp16=False):
         super().__init__(plans_file, fold, output_folder, dataset_directory, batch_dice, stage, unpack_data,
                          deterministic, num_gpus, distribute_batch_size, fp16)
-        self.max_num_epochs = 1000
+        self.max_num_epochs = 2
+        # self.max_num_epochs = 1000
         # self.task = {"live":0, "kidn":1, "hepa":2, "panc":3, "colo":4, "lung":5, "sple":6, "sub-":7, "pros":8, "BraT":9, "PETC": 10}
         self.task = {"live":0, "kidn":1, "hepa":2, "panc":3, "colo":4, "lung":5, "sple":6, "sub-":7, "pros":8, "BraT":9, "PETC": 10}
         self.task_class = {0: 3, 1: 3, 2: 3, 3: 3, 4: 2, 5: 2, 6: 2, 7: 2, 8: 2, 9: 4, 10: 2}
         # self.task_id_class_lst_mapping = {
         #     8: [0, 1], 
-        # }
-        # self.task_id_class_lst_mapping = {
-        #     0: [0, 1, 2], 
-        #     1: [0, 3, 4], 
-        #     2: [0, 5, 6], 
-        #     3: [0, 7, 8], 
-        #     4: [0, 9], 
-        #     5: [0, 10], 
-        #     6: [0, 11], 
-        #     # 7: [0, 12], 
-        #     # 8: [0, 13], 
-        #     # 9: [0, 14, 15, 16, 17], 
-        #     # 10: [0, 18]
         # }
         self.task_id_class_lst_mapping = {
             0: [0, 1, 2], 
@@ -66,11 +54,24 @@ class UniSeg_Trainer_DP(nnUNetTrainerV2_DP):
             4: [0, 9], 
             5: [0, 10], 
             6: [0, 11], 
-            # 7: [0, 12], 
-            8: [0, 12], 
-            9: [0, 13, 14, 15, 16], 
+            7: [0, 12], 
+            8: [0, 13], 
+            9: [0, 14, 15, 16], 
             10: [0, 17]
         }
+        # self.task_id_class_lst_mapping = {
+        #     0: [0, 1, 2], 
+        #     1: [0, 3, 4], 
+        #     2: [0, 5, 6], 
+        #     3: [0, 7, 8], 
+        #     4: [0, 9], 
+        #     5: [0, 10], 
+        #     6: [0, 11], 
+        #     # 7: [0, 12], 
+        #     8: [0, 12], 
+        #     9: [0, 13, 14, 15, 16], 
+        #     10: [0, 17]
+        # }
         self.class_lst_task_id_mapping = {}
         self.class_lst_to_std_mapping = {}
         for task_id, cls_lst in self.task_id_class_lst_mapping.items():
@@ -300,13 +301,13 @@ class UniSeg_Trainer_DP(nnUNetTrainerV2_DP):
                 # output = self.network(data, task_id)
                 tc_inds = copy.deepcopy(self.task_id_class_lst_mapping[int(task_id[0])])
                 num_classes_in_gt = self.task_class[int(task_id[0])]
-                output = self.network(data, task_id=task_id, gt_seg=target[0], num_classes_in_gt=num_classes_in_gt, update_target_dist=update_target_dist)
+                output = self.network(data, task_id=task_id, gt_seg=target[0], num_classes_in_gt=num_classes_in_gt, update_target_dist=update_target_dist, for_loss=True)
                 
                 # output, mus, sigs = output
                 # if self.network.get_update_target_dist():
                 if update_target_dist:
-                    output, flat_feat_extracts = output
-                    self.mus, self.sigs = self.dynamic_dist_network(flat_feat_extracts, self.mus, self.sigs)
+                    output, flat_tp_feats = output
+                    self.mus, self.sigs = self.dynamic_dist_network(flat_tp_feats, self.mus, self.sigs)
 
                 # extract tasks per gpu (should be big speed up)
                 output, extractions = output
@@ -352,6 +353,7 @@ class UniSeg_Trainer_DP(nnUNetTrainerV2_DP):
                 # l = self.loss(output, target)
                 # l = self.loss(extractions, mus, sigs, tc_inds)
                 # l, est_dists = self.loss(extractions, mus, sigs, tc_inds, return_est_dists=True, with_sep_loss=self.network.update_target_dist)
+                self.print_to_log_file(f"task_id: {task_id}")
                 l, est_dists = self.loss.forward_gnlll(output, extractions, self.mus, self.sigs, target[0], tc_inds, return_est_dists=True, with_sep_loss=update_target_dist)
                 # l = self.loss.gnlll(output, mus, sigs, target[0], tc_inds)
                 # l = self.loss.vec_gnlll(extractions, mus, sigs, tc_inds)
@@ -362,7 +364,10 @@ class UniSeg_Trainer_DP(nnUNetTrainerV2_DP):
                 # Test the dice score:
                 with torch.no_grad():
                     est_seg = self.network.module.segment_from_dists(output, est_dists, self.class_lst_to_std_mapping)
-                    est_seg = torch.nn.functional.one_hot(est_seg, self.task_class[int(task_id[0])]).permute(0, 4, 1, 2, 3)
+                    # NOTE change permute to be (0, num_classes_in_gt_seg, 1, ..., num_classes_in_gt_seg-1 )
+                    perm_dims = tuple([0, len(output.shape)-1] + list(range(1, len(output.shape)-1)))
+                    # est_seg = torch.nn.functional.one_hot(est_seg, self.task_class[int(task_id[0])]).permute(0, 4, 1, 2, 3)
+                    est_seg = torch.nn.functional.one_hot(est_seg, num_classes_in_gt).permute(perm_dims)
                     # dc_score = self.dc_loss(est_seg.unsqueeze(1), target[0])
                     dc_score = self.dc_loss(est_seg, target[0])
                     # self.print_to_log_file(f"Dice Score: {-dc_score.item()}")
@@ -398,7 +403,9 @@ class UniSeg_Trainer_DP(nnUNetTrainerV2_DP):
             # segment output
             output_segmentation = self.network.module.segment(output)
             std_output_segmentation = self.network.module.standardize_segmentation(output_segmentation, self.class_lst_to_std_mapping)
-            est_seg = torch.nn.functional.one_hot(std_output_segmentation, num_classes_in_gt).permute(0, 4, 1, 2, 3)
+            # est_seg = torch.nn.functional.one_hot(std_output_segmentation, num_classes_in_gt).permute(0, 4, 1, 2, 3)
+            perm_dims = tuple([0, len(output.shape)-1] + list(range(1, len(output.shape)-1)))
+            est_seg = torch.nn.functional.one_hot(std_output_segmentation, num_classes_in_gt).permute(perm_dims)
             # wrap in lists
             # self.run_online_evaluation([std_output_segmentation], target)
             # tp, fp, fn, _ = get_tp_fp_fn_tn(std_output_segmentation, target[0])

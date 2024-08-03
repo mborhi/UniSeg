@@ -51,10 +51,10 @@ class UniSeg_Trainer(nnUNetTrainerV2):
             4: [0, 9], 
             5: [0, 10], 
             6: [0, 11], 
-            # 7: [0, 12], 
-            # 8: [0, 13], 
-            # 9: [0, 14, 15, 16, 17], 
-            # 10: [0, 18]
+            7: [0, 12], 
+            8: [0, 13], 
+            9: [0, 14, 15, 16, 17], 
+            10: [0, 18]
         }
         self.class_lst_task_id_mapping = {}
         self.class_lst_to_std_mapping = {}

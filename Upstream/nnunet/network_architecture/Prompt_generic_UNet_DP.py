@@ -662,16 +662,16 @@ class TaskPromptFeatureExtractor_DP(SegmentationNetwork):
 
         self.feature_space_gmm = GaussianMixtureModel(categorical, comp_dists)
 
-    def forward(self, x, task_id=None, **tr_kwargs):
-        if self.training:
-            return self.forward_train(x, task_id=task_id, **tr_kwargs)
+    def forward(self, x, task_id=None, for_loss=False, **kwargs):
+        if self.training or for_loss:
+            return self.forward_train(x, task_id=task_id, **kwargs)
         else :
-            return self.forward_inference(x, task_id=task_id)
+            return self.forward_inference(x, task_id=task_id, **kwargs)
 
 
-    def forward_train(self, x, task_id=None, gt_seg=None, num_classes_in_gt=None, update_target_dist=False):
+    def forward_train(self, x, task_id=None, gt_seg=None, num_classes_in_gt=None, update_target_dist=False, **kwargs):
         if update_target_dist:
-            features, _, _, feat_extracts, _ = self.feature_extractor(x, task_id, get_prompt=True)
+            features, _, _, tp_feats, _ = self.feature_extractor(x, task_id, get_prompt=True)
         else:
             features = self.feature_extractor(x, task_id, get_prompt=False)
         norms = features.reshape(features.size(0), -1).norm(dim=1)
@@ -682,16 +682,19 @@ class TaskPromptFeatureExtractor_DP(SegmentationNetwork):
         gt_extractions = [extract_task_set(features, gt_seg, c, keep_dims=True) for c in range(num_classes_in_gt)]
 
         if update_target_dist:
-            flat_feat_extracts = feat_extracts.reshape(x.size(0), -1)
-            return features, flat_feat_extracts, gt_extractions
+            flat_tp_feats = tp_feats.reshape(x.size(0), -1)
+            return (features, gt_extractions), flat_tp_feats
         
         return features, gt_extractions#, mus, sigs
 
-    def forward_inference(self, x, task_id=None):
+    def forward_inference(self, x, task_id=None, gt_seg=None, num_classes_in_gt=None, **kwargs):
         features = self.feature_extractor(x, task_id, get_prompt=False)
+        
+        
+        gt_extractions = [extract_task_set(features, gt_seg, c, keep_dims=True) for c in range(num_classes_in_gt)]
 
         # Use GMM + Bayes' Rule 
-        return self.segment(features)
+        return self.segment(features), gt_extractions
 
     # def get_distance_bounds(self):
     #     return self.dynamic_dist.min_dist

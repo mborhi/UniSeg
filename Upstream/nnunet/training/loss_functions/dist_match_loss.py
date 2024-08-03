@@ -57,6 +57,7 @@ class DynamicDistMatchingLoss(nn.Module):
         vts = torch.stack(vts).to(device=features.device)
 
         # typically: network_predict: input, var | target --> network_predict: pred_dist | means*, var*
+        vts = torch.clamp(vts, min=1e-05)
         total_gnlll = F.gaussian_nll_loss(mts, features, vts, reduction='none')
         
         # Reduce by mean over task
@@ -170,7 +171,8 @@ class DynamicDistMatchingLoss(nn.Module):
                 pred_dist_mean, pred_dist_var = torch.mean(pred_dist_samples, 1), torch.cov(pred_dist_samples)
 
             # Clip variance if too large
-            pred_dist_var = torch.clamp(pred_dist_var, max=1000.0) + torch.eye(pred_dist_var.shape[-1], device=pred_dist_var.device) * 1e-04
+            # pred_dist_var = torch.clamp(pred_dist_var, max=1000.0) + torch.eye(pred_dist_var.shape[-1], device=pred_dist_var.device) * 1e-04
+            pred_dist_var = torch.clamp(pred_dist_var, max=1000.0) #+ torch.eye(pred_dist_var.shape[-1], device=pred_dist_var.device) * 1e-04
 
             
             # NOTE Need to generalize to Multivaraite
@@ -216,7 +218,9 @@ class DynamicDistMatchingLoss(nn.Module):
         total_gnlll = self.gnlll(output, means, covs, gt_seg, indices)
 
         if return_est_dists:
-            _, est_dists = self.get_distribution_loss(pred_dists, means, covs, indices, handle_nan=handle_nan, return_est_dists=True)
+            with torch.no_grad():
+                # _, est_dists = self.get_distribution_loss(pred_dists, means, covs, indices, handle_nan=handle_nan, return_est_dists=True)
+                est_dists = self.get_est_dists(pred_dists, indices, handle_nan=handle_nan)
 
         # sep_loss = self.get_separability_loss(means[indices, :])
         if with_sep_loss:
@@ -234,6 +238,41 @@ class DynamicDistMatchingLoss(nn.Module):
         
         return total_loss
 
+    def get_est_dists(self, pred_dists, indices, handle_nan=False):
+        est_dists = []
+        total_kl_div = 0
+        # for i, pred_dist_samples in enumerate(pred_dists):
+        for i, task_label in enumerate(indices):
+            pred_dist_samples = pred_dists[i].to(dtype=torch.float64)
+            
+            num_nan = pred_dist_samples.isnan().count_nonzero().item()
+            assert num_nan == 0, f"NaN values [{num_nan}] in predicted distribution."
+            
+            if handle_nan:
+                pred_dist_mean = torch.mean(pred_dist_samples[~pred_dist_samples.isnan()])
+                pred_dist_var = (pred_dist_samples - pred_dist_mean).square()
+                pred_dist_var = torch.mean(pred_dist_var[~pred_dist_var.isnan()]) + 0.0001 # numerical stability
+                # pred_dist_var = torch.var(pred_dist_samples) + 0.0001 # numerical stability
+            else:
+                pred_dist_mean, pred_dist_var = torch.mean(pred_dist_samples, 1), torch.cov(pred_dist_samples)
+
+            # Clip variance if too large
+            pred_dist_var = torch.clamp(pred_dist_var, max=1000.0)
+
+            if not is_positive_definite(pred_dist_var):
+                pred_dist_var = 1. * torch.eye(pred_dist_var.size(-1), device=pred_dist_var.device)
+            
+            pred_dist = MultivariateNormal(pred_dist_mean, pred_dist_var) 
+            est_dists.append(pred_dist)
+
+        return est_dists
+
+def is_positive_definite(mat):
+    try:
+        _ = torch.linalg.cholesky(mat)
+        return True
+    except RuntimeError:
+        return False
 
 if __name__ == "__main__":
 
