@@ -23,6 +23,7 @@ from nnunet.training.network_training.nnUNetTrainer import nnUNetTrainer
 from nnunet.training.network_training.nnUNetTrainerCascadeFullRes import nnUNetTrainerCascadeFullRes
 from nnunet.utilities.task_name_id_conversion import convert_id_to_task_name
 
+import wandb
 
 def main():
     parser = argparse.ArgumentParser()
@@ -90,7 +91,8 @@ def main():
                         help='path to nnU-Net checkpoint file to be used as pretrained model (use .model '
                              'file, for example model_final_checkpoint.model). Will only be used when actually training. '
                              'Optional. Beta. Use with caution.')
-
+    parser.add_argument('-exp_name', type=str, required=True, default=None,
+                        help='exp name')
     args = parser.parse_args()
 
     task = args.task
@@ -110,6 +112,7 @@ def main():
     num_gpus = args.gpus
     fp32 = args.fp32
     val_folder = args.val_folder
+    exp_name = args.exp_name
     # interp_order = args.interp_order
     # interp_order_z = args.interp_order_z
     # force_separate_z = args.force_separate_z
@@ -133,7 +136,7 @@ def main():
     #     raise ValueError("force_separate_z must be None, True or False. Given: %s" % force_separate_z)
 
     plans_file, output_folder_name, dataset_directory, batch_dice, stage, \
-        trainer_class = get_default_configuration(network, task, network_trainer, plans_identifier)
+        trainer_class = get_default_configuration(exp_name, network, task, network_trainer, plans_identifier)
 
     if trainer_class is None:
         raise RuntimeError("Could not find trainer class")
@@ -158,6 +161,20 @@ def main():
         trainer.save_final_checkpoint = False  # whether or not to save the final checkpoint
 
     trainer.initialize(not validation_only)
+
+    init_means, init_vars = trainer.mus, trainer.sigs
+    wandb.init(
+        project="Target-Distribution-Matching-UniSeg-Single-Task-HD",
+        config={
+            "exp_name": exp_name,
+            "debug": False,
+            "network": network, 
+            "initial_means": init_means, 
+            "initial_vars": init_vars, 
+            "feature_space_dim": 32, 
+            "task": "Prostate"
+        }
+    )
 
     if find_lr:
         trainer.find_lr()
