@@ -23,6 +23,7 @@ from sklearn.model_selection import KFold
 from torch import nn
 from torch.cuda.amp import GradScaler, autocast
 from torch.optim.lr_scheduler import _LRScheduler
+from torch.nn.parallel.data_parallel import DataParallel
 
 matplotlib.use("agg")
 from time import time, sleep
@@ -457,14 +458,14 @@ class NetworkTrainer(object):
                     # l = self.run_iteration(self.tr_gen, True) # NOTE With backprop
                     l = self.run_iteration(self.tr_gen, True, True) # NOTE for debug
                     train_losses_epoch.append(l)
-                    # break # NOTE
+                    # if self.epoch == 5: break # NOTE
 
             # print("task_pool", self.task_index)
             self.print_to_log_file("task_pool: "+str(self.task_index))
 
             self.all_tr_losses.append(np.mean(train_losses_epoch))
             self.print_to_log_file("train loss : %.4f" % self.all_tr_losses[-1])
-            wandb.log({"epoch_avg_loss": self.all_tr_losses[-1]})
+            # wandb.log({"epoch_avg_loss": self.all_tr_losses[-1]})
             
             # NOTE Add GMM claculations here
             # NOTE this may be redundent all together
@@ -481,7 +482,7 @@ class NetworkTrainer(object):
                     val_losses.append(l)
                 self.all_val_losses.append(np.mean(val_losses))
                 self.print_to_log_file("validation loss: %.4f" % self.all_val_losses[-1])
-                wandb.log({"val_loss": self.all_val_losses[-1]})
+                # wandb.log({"val_loss": self.all_val_losses[-1]})
 
                 if self.also_val_in_tr_mode:
                     self.network.train()
@@ -494,10 +495,17 @@ class NetworkTrainer(object):
                     self.print_to_log_file("validation loss (train=True): %.4f" % self.all_val_losses_tr_mode[-1])
             self.update_train_loss_MA()  # needed for lr scheduler and stopping of training
 
-            # set gmm learned to false
-            self.network.gmm_fitted = False
-            # clear queues
-            self.network.clear_queues()
+            if self.epoch + 1 < self.max_num_epochs:
+                if isinstance(self.network, DataParallel):
+                    # set gmm learned to false
+                    self.network.module.gmm_fitted = False
+                    # clear queues
+                    self.dynamic_dist_network.clear_queues()
+                else:
+                    # set gmm learned to false
+                    self.network.gmm_fitted = False
+                    # clear queues
+                    self.network.clear_queues()
 
             continue_training = self.on_epoch_end()
 

@@ -14,7 +14,7 @@ from nnunet.utilities.nd_softmax import softmax_helper
 from torch import nn
 import SimpleITK as sitk
 import shutil
-from nnunet.network_architecture.Prompt_generic_UNet_DP import UniSeg_model, TaskPromptFeatureExtractor_DP, DynamicDistributionModel_DP
+from nnunet.network_architecture.Prompt_generic_UNet_DP import UniSeg_model, UniSegExtractor_DP, DynamicDistributionModel_DP
 from nnunet.training.dataloading.dataset_loading import DataLoader3D_UniSeg
 from batchgenerators.utilities.file_and_folder_operations import *
 from multiprocessing import Pool
@@ -33,7 +33,7 @@ from nnunet.utilities.tensor_utilities import sum_tensor
 import copy 
 # import wandb
 
-class UniSeg_Trainer_DP(nnUNetTrainerV2_DP):
+class UniSegExtractor_Trainer_DP(nnUNetTrainerV2_DP):
     def __init__(self, plans_file, fold, output_folder=None, dataset_directory=None, batch_dice=True, stage=None,
                  unpack_data=True, deterministic=True, num_gpus=2, distribute_batch_size=False, fp16=False):
         super().__init__(plans_file, fold, output_folder, dataset_directory, batch_dice, stage, unpack_data,
@@ -127,30 +127,34 @@ class UniSeg_Trainer_DP(nnUNetTrainerV2_DP):
         net_nonlin_kwargs = {'negative_slope': 1e-2, 'inplace': True}
         # NOTE
         self.base_num_features = self.feature_space_dim
-        self.uniseg_network = UniSeg_model(self.patch_size, self.total_task_num, [1, 2, 4], self.base_num_features, self.num_classes,
+        # self.uniseg_network = UniSeg_model(self.patch_size, self.total_task_num, [1, 2, 4], self.base_num_features, self.num_classes,
+        #                             len(self.net_num_pool_op_kernel_sizes),
+        #                             self.conv_per_stage, 2, conv_op, norm_op, norm_op_kwargs, dropout_op,
+        #                             dropout_op_kwargs,
+        #                             net_nonlin, net_nonlin_kwargs, True, False, lambda x: x, InitWeights_He(1e-2),
+        #                             self.net_num_pool_op_kernel_sizes, self.net_conv_kernel_sizes, False, True, True)
+        uniseg_args = (self.patch_size, self.total_task_num, [1, 2, 4], self.base_num_features, self.num_classes,
                                     len(self.net_num_pool_op_kernel_sizes),
                                     self.conv_per_stage, 2, conv_op, norm_op, norm_op_kwargs, dropout_op,
                                     dropout_op_kwargs,
                                     net_nonlin, net_nonlin_kwargs, True, False, lambda x: x, InitWeights_He(1e-2),
                                     self.net_num_pool_op_kernel_sizes, self.net_conv_kernel_sizes, False, True, True)
-        if torch.cuda.is_available():
-            self.uniseg_network.cuda()
+        uniseg_kwargs = {}
+
         # self.network.inference_apply_nonlin = softmax_helper
-        self.uniseg_network.inference_apply_nonlin = lambda x: x
         # num_components = len(self.class_lst_to_std_mapping.keys())
-        self.network = TaskPromptFeatureExtractor_DP(feature_space_dim=self.feature_space_dim, 
-                                                     feature_extractor=self.uniseg_network, 
-                                                     num_tasks=self.num_components, 
-                                                     queue_size=self.queue_size,
-                                                     momentum=0.999, 
-                                                     total_num_classes=self.num_classes,
-                                                     class_lst_to_std_mapping=self.class_lst_to_std_mapping, 
-                                                     task_id_class_lst_mapping=self.task_id_class_lst_mapping
-                                                    )
+        self.network = UniSegExtractor_DP(self.base_num_features, 
+                                          self.num_components,  
+                                          self.class_lst_to_std_mapping, 
+                                          self.task_id_class_lst_mapping,
+                                          *uniseg_args, 
+                                          **uniseg_kwargs
+                                        )
+        self.network.inference_apply_nonlin = lambda x: x
         if torch.cuda.is_available():
             self.network.cuda()
 
-        self.tp_dim = int(self.uniseg_network.intermediate_prompt.numel() / self.uniseg_network.num_class)
+        self.tp_dim = int(self.network.intermediate_prompt.numel() / self.network.num_class)
         # Isn't actually DP, onyl used for further DP modules
         self.dynamic_dist_network = DynamicDistributionModel_DP(self.feature_space_dim, self.tp_dim, self.num_components, momentum=0.999, queue_size=5000)
 
@@ -346,13 +350,25 @@ class UniSeg_Trainer_DP(nnUNetTrainerV2_DP):
                 #     extractions.append(comb_feature_extractions)
                 
                 # Check that each tc_ind has a non-empty extraction; if one does, remove it and the tc_ind
-                idx = 0
-                while idx < len(tc_inds):
-                    if extractions[idx].size(-1) < 2:
-                        _ = extractions.pop(idx)
-                        _ = tc_inds.pop(idx)
+                # idx = 0
+                # while idx < len(tc_inds):
+                #     if extractions[idx].size(-1) < 2:
+                #         _ = extractions.pop(idx)
+                #         _ = tc_inds.pop(idx)
+                #     else:
+                #         idx += 1
+
+                # tc_inds = [self.task_id_class_lst_mapping[int(task_id[0])][int(c)] for c in target_classes]
+                tc_inds = []
+                i, j = 0, 0
+                while i < len(extractions) and j < len(target_classes):
+                    c = target_classes[j]
+                    if extractions[i].size(-1) < 2:
+                        _ = extractions.pop(i)
                     else:
-                        idx += 1
+                        tc_inds.append(self.task_id_class_lst_mapping[int(task_id[0])][int(c)])
+                        i += 1
+                    j += 1
 
                 # assert len(output) > 1
                 # for out in range(len(output)):
@@ -369,14 +385,16 @@ class UniSeg_Trainer_DP(nnUNetTrainerV2_DP):
                 # print(f"gnll: {l.item()}")
                 # wandb.log({"loss": l.item()})
                 self.print_to_log_file(f"loss: {l.item()}")
-
+                assert not np.isnan(l.item())
                 # Test the dice score:
                 with torch.no_grad():
                     est_seg = self.network.module.segment_from_dists(output, est_dists, self.class_lst_to_std_mapping)
                     # NOTE change permute to be (0, num_classes_in_gt_seg, 1, ..., num_classes_in_gt_seg-1 )
                     perm_dims = tuple([0, len(output.shape)-1] + list(range(1, len(output.shape)-1)))
                     # est_seg = torch.nn.functional.one_hot(est_seg, self.task_class[int(task_id[0])]).permute(0, 4, 1, 2, 3)
-                    est_seg = torch.nn.functional.one_hot(est_seg, num_classes_in_gt).permute(perm_dims)
+                    self.print_to_log_file(f"num classes in gt; {num_classes_in_gt}, {est_seg.unique()}")
+                    est_seg = torch.nn.functional.one_hot(est_seg, num_classes_in_gt)
+                    est_seg = torch.permute(est_seg, perm_dims)
                     # dc_score = self.dc_loss(est_seg.unsqueeze(1), target[0])
                     dc_score = self.dc_loss(est_seg, target[0])
                     # self.print_to_log_file(f"Dice Score: {-dc_score.item()}")
@@ -414,7 +432,8 @@ class UniSeg_Trainer_DP(nnUNetTrainerV2_DP):
             std_output_segmentation = self.network.module.standardize_segmentation(output_segmentation, self.class_lst_to_std_mapping)
             # est_seg = torch.nn.functional.one_hot(std_output_segmentation, num_classes_in_gt).permute(0, 4, 1, 2, 3)
             perm_dims = tuple([0, len(output.shape)-1] + list(range(1, len(output.shape)-1)))
-            est_seg = torch.nn.functional.one_hot(std_output_segmentation, num_classes_in_gt).permute(perm_dims)
+            est_seg = torch.nn.functional.one_hot(std_output_segmentation, num_classes_in_gt)
+            est_seg = torch.permute(est_seg, perm_dims)
             # wrap in lists
             # self.run_online_evaluation([std_output_segmentation], target)
             # tp, fp, fn, _ = get_tp_fp_fn_tn(std_output_segmentation, target[0])
@@ -454,8 +473,8 @@ class UniSeg_Trainer_DP(nnUNetTrainerV2_DP):
         """
         if debug=True then the temporary files generated for postprocessing determination will be kept
         """
-        ds = self.uniseg_network.do_ds
-        self.uniseg_network.do_ds = False
+        ds = self.network.do_ds
+        self.network.do_ds = False
 
         current_mode = self.network.training
         self.network.eval()
@@ -524,7 +543,7 @@ class UniSeg_Trainer_DP(nnUNetTrainerV2_DP):
                 data[-1][data[-1] == -1] = 0
 
                 # NOTE
-                self.network.conv_op = self.network.feature_extractor.conv_op
+                # self.network.conv_op = self.network.feature_extractor.conv_op
 
                 softmax_pred = self.predict_preprocessed_data_return_seg_and_softmax(data[:-1], task_id,
                                                                                      do_mirroring=do_mirroring,
@@ -620,7 +639,7 @@ class UniSeg_Trainer_DP(nnUNetTrainerV2_DP):
 
         self.network.train(current_mode)
 
-        self.uniseg_network.do_ds = ds
+        self.network.do_ds = ds
 
     def get_hard_tp_fp_fn(self, output, target):
         with torch.no_grad():

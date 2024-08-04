@@ -38,15 +38,17 @@ class DynamicDistMatchingLoss(nn.Module):
         # We flip this: the network outputs data, and we maximize the probability that the it comes from
         # the observed dist. -- sounds a lot like a generative model
         # gnlll_fn = nn.GaussianNLLLoss(reduction='mean')
+        target_indices = gt_seg.unique().detach().cpu().numpy()
         batch_size = features.size(0)
-        means_tensor = torch.empty(features.size(), dtype=means.dtype, device=features.device)
-        vars_tensor = torch.empty(features.size(), dtype=covs.dtype, device=features.device)
+        means_tensor = torch.zeros(features.size(), dtype=means.dtype, device=features.device)
+        vars_tensor = torch.zeros(features.size(), dtype=covs.dtype, device=features.device)
         mts, vts = [], []
         for b in range(batch_size):
             mt = means_tensor[b].permute(1, 2, 3, 0)
             vt = vars_tensor[b].permute(1, 2, 3, 0)
             for i, ind in enumerate(indices):
-                msk = (gt_seg[b] == i)[0, :]
+                target_ind = target_indices[i]
+                msk = (gt_seg[b] == target_ind)[0, :]
                 mt[msk] = means[ind]
                 # vt[msk] = covs[ind]
                 vt[msk] = torch.full_like(means[ind], fill_value=covs[ind][0, 0])
@@ -57,7 +59,6 @@ class DynamicDistMatchingLoss(nn.Module):
         vts = torch.stack(vts).to(device=features.device)
 
         # typically: network_predict: input, var | target --> network_predict: pred_dist | means*, var*
-        vts = torch.clamp(vts, min=1e-05)
         total_gnlll = F.gaussian_nll_loss(mts, features, vts, reduction='none')
         
         # Reduce by mean over task
@@ -72,8 +73,9 @@ class DynamicDistMatchingLoss(nn.Module):
             b_sum = 0
             num_elems = 0
             for b in range(batch_size):
-                msk = (gt_seg[b] == i)[0, :]
-                b_sum += total_gnlll[b][:,msk].sum()
+                target_ind = target_indices[i]
+                msk = (gt_seg[b] == target_ind)[0, :]
+                b_sum += total_gnlll[b][:,msk].sum() # maybe do nansum
                 num_elems += total_gnlll[b][:,msk].count_nonzero()
 
             l = l + self.class_weights[i] * (b_sum / num_elems)
@@ -257,7 +259,7 @@ class DynamicDistMatchingLoss(nn.Module):
                 pred_dist_mean, pred_dist_var = torch.mean(pred_dist_samples, 1), torch.cov(pred_dist_samples)
 
             # Clip variance if too large
-            pred_dist_var = torch.clamp(pred_dist_var, max=1000.0)
+            pred_dist_var = torch.clamp(pred_dist_var, min=1e-04, max=1.0)
 
             if not is_positive_definite(pred_dist_var):
                 pred_dist_var = 1. * torch.eye(pred_dist_var.size(-1), device=pred_dist_var.device)
