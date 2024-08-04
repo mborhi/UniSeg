@@ -125,8 +125,8 @@ class DynamicDistributionModel_DP(nn.Module):
             
             input_means = means.reshape(-1)[None, :].repeat(x.size(0), 1).detach().to(device=x.device)
             # input_vars = vars.permute(1, 0).repeat(x.size(0), 1).detach().to(device=x.device)
-            input_vars = input_vars.repeat(x.size(0), 1).detach().to(device=x.device)
-            task_id = task_id.repeat(x.size(0), 1)
+            input_vars = vars.repeat(x.size(0), 1).detach().to(device=x.device)
+            task_id = task_id.repeat(x.size(0), 1).detach().to(device=x.device)
             
             input = torch.cat((input_means, input_vars, task_id, x), -1)
             mu_hat_t = self.task_mu_modules[t](input).mean(0) # averaged along batch
@@ -135,7 +135,7 @@ class DynamicDistributionModel_DP(nn.Module):
             if with_momentum_update:
                 # updated_var_t = (1 - self.momentum) * sigma_hat_t + (self.momentum * self.vars[t]) + 0.0001 # for numerical stability
                 # self.vars[t] = updated_var_t 
-                updated_mean_t = (1 - self.momentum) * mu_hat_t + (self.momentum * self.means[t])
+                updated_mean_t = (1 - self.momentum) * mu_hat_t + (self.momentum * means[t])
                 # print(f"updated mean, var {t}: {updated_mean_t}, {updated_var_t}")
                 print(f"updated mean[{t}]: {updated_mean_t}")
                 means[t] = updated_mean_t 
@@ -885,7 +885,7 @@ class UniSegExtractor_DP(UniSeg_model):
 
         if update_target_dist:
             flat_tp_feats = tp_feats.reshape(x.size(0), -1)
-            return (features, gt_extractions), flat_tp_feats
+            return (features, flat_tp_feats), gt_extractions
         
         return features, gt_extractions#, mus, sigs
 
