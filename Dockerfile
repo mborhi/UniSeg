@@ -34,7 +34,7 @@ RUN python3 -c "import torch; print('PyTorch version:', torch.__version__)"
 # Install nnUnet
 RUN pip install nnUnet && \
     pip install nibabel && \
-    pip install numpy && \
+    pip install numpy==1.23.4 && \
     pip install tqdm && \
     pip install SimpleITK && \
     pip install wandb
