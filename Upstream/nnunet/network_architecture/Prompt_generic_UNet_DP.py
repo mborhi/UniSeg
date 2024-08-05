@@ -587,6 +587,7 @@ class TaskPromptFeatureExtractor_DP(SegmentationNetwork):
         self.class_lst_to_std_mapping = class_lst_to_std_mapping
         self.task_id_class_lst_mapping = task_id_class_lst_mapping
         self.num_classes= total_num_classes
+        self.with_wandb = False
 
 
     def init_gmms(self, means, vars):
@@ -625,11 +626,12 @@ class TaskPromptFeatureExtractor_DP(SegmentationNetwork):
             if torch.cuda.is_available():
                 mean_t = mean_t.cuda()
                 cov_t = cov_t.cuda()
-                # wandb.log({
-                #     f'gmm_mean_{t}': mean_t,#.item(), 
-                #     f'gmm_var_{t}': cov_t,#.item(), 
-                #     f'gmm_lower_bound_{t}': self.gaussian_mixtures[t].lower_bound_,
-                # })
+                if self.with_wandb: 
+                    wandb.log({
+                        f'gmm_mean_{t}': mean_t,#.item(), 
+                        f'gmm_var_{t}': cov_t,#.item(), 
+                        f'gmm_lower_bound_{t}': self.gaussian_mixtures[t].lower_bound_,
+                    })
 
             # if len(cov_t.shape) == 2:
             #     cov_t = cov_t.unsqueeze(0).repeat(mean_t.size(0), 1, 1)
@@ -638,9 +640,9 @@ class TaskPromptFeatureExtractor_DP(SegmentationNetwork):
 
         # Determine the KL w.r.t these EM-learned dists and targets
         learned_target_kls = kl_divs(component_distributions, mus, sigs)
-        for i, kl in enumerate(learned_target_kls):
-            # wandb.log({f'est_gmm_kl_{trained_indices[i]}': kl.item()})
-            pass
+        if self.with_wandb:
+            for i, kl in enumerate(learned_target_kls):
+                wandb.log({f'est_gmm_kl_{trained_indices[i]}': kl.item()})
 
         # https://discuss.pytorch.org/t/how-to-use-torch-distributions-multivariate-normal-multivariatenormal-in-multi-gpu-mode/135030/3
         # component_distributions = [
@@ -768,7 +770,7 @@ class TaskPromptFeatureExtractor_DP(SegmentationNetwork):
 
 class UniSegExtractor_DP(UniSeg_model):
 
-    def __init__(self, feature_space_dim, num_tasks, class_lst_to_std_mapping, task_id_class_lst_mapping, *args, **kwargs):
+    def __init__(self, feature_space_dim, num_tasks, class_lst_to_std_mapping, task_id_class_lst_mapping, *args, with_wandb=False, **kwargs):
         super().__init__(*args, **kwargs)
 
         self.num_tasks = num_tasks
@@ -785,6 +787,7 @@ class UniSegExtractor_DP(UniSeg_model):
 
         self.class_lst_to_std_mapping = class_lst_to_std_mapping
         self.task_id_class_lst_mapping = task_id_class_lst_mapping
+        self.with_wandb = with_wandb
 
 
     def init_gmms(self, means, vars):
@@ -823,11 +826,12 @@ class UniSegExtractor_DP(UniSeg_model):
             if torch.cuda.is_available():
                 mean_t = mean_t.cuda()
                 cov_t = cov_t.cuda()
-                # wandb.log({
-                #     f'gmm_mean_{t}': mean_t,#.item(), 
-                #     f'gmm_var_{t}': cov_t,#.item(), 
-                #     f'gmm_lower_bound_{t}': self.gaussian_mixtures[t].lower_bound_,
-                # })
+                if self.with_wandb:
+                    wandb.log({
+                        f'gmm_mean_{t}': mean_t,#.item(), 
+                        f'gmm_var_{t}': cov_t,#.item(), 
+                        f'gmm_lower_bound_{t}': self.gaussian_mixtures[t].lower_bound_,
+                    })
 
             # if len(cov_t.shape) == 2:
             #     cov_t = cov_t.unsqueeze(0).repeat(mean_t.size(0), 1, 1)
@@ -836,9 +840,9 @@ class UniSegExtractor_DP(UniSeg_model):
 
         # Determine the KL w.r.t these EM-learned dists and targets
         learned_target_kls = kl_divs(component_distributions, mus, sigs)
-        for i, kl in enumerate(learned_target_kls):
-            # wandb.log({f'est_gmm_kl_{trained_indices[i]}': kl.item()})
-            pass
+        if self.with_wandb:
+            for i, kl in enumerate(learned_target_kls):
+                wandb.log({f'est_gmm_kl_{trained_indices[i]}': kl.item()})
 
         # https://discuss.pytorch.org/t/how-to-use-torch-distributions-multivariate-normal-multivariatenormal-in-multi-gpu-mode/135030/3
         # component_distributions = [
@@ -878,10 +882,11 @@ class UniSegExtractor_DP(UniSeg_model):
             features = super().forward(x, task_id, get_prompt=False)
         norms = features.reshape(features.size(0), -1).norm(dim=1)
         for norm in norms:
-            # wandb.log({"output feature space norm (per batch)": norm.item()})
+            if self.with_wandb: wandb.log({"output feature space norm (per batch)": norm.item()})
             print(f"output feature space norm (per batch): {norm.item()}")
 
-        gt_extractions = [extract_task_set(features, gt_seg, c, keep_dims=True) for c in target_classes]
+        # extract + permute dims for DP 
+        gt_extractions = [extract_task_set(features, gt_seg, c, keep_dims=True).permute(1, 0) for c in target_classes]
 
         if update_target_dist:
             flat_tp_feats = tp_feats.reshape(x.size(0), -1)
@@ -893,7 +898,8 @@ class UniSegExtractor_DP(UniSeg_model):
         features = super().forward(x, task_id, get_prompt=False)
         
         if gt_seg is not None:
-            gt_extractions = [extract_task_set(features, gt_seg, c, keep_dims=True) for c in target_classes]
+            # extract + permute dimensions for DP
+            gt_extractions = [extract_task_set(features, gt_seg, c, keep_dims=True).permute(1, 0) for c in target_classes]
 
         #     # Use GMM + Bayes' Rule 
         #     return self.segment(features), gt_extractions
@@ -903,9 +909,6 @@ class UniSegExtractor_DP(UniSeg_model):
             return self.full_segment(features, task_id), gt_extractions
 
         return self.full_segment(features, task_id)
-
-    # def get_distance_bounds(self):
-    #     return self.dynamic_dist.min_dist
 
     def segment(self, features: torch.Tensor):
 

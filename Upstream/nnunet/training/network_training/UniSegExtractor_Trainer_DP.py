@@ -31,7 +31,7 @@ from nnunet.training.loss_functions.dice_loss import DC_and_CE_loss, SoftDiceLos
 # from nnunet.utilities.sep import get_task_set, extract_task_set
 from nnunet.utilities.tensor_utilities import sum_tensor
 import copy 
-# import wandb
+import wandb
 
 class UniSegExtractor_Trainer_DP(nnUNetTrainerV2_DP):
     def __init__(self, plans_file, fold, output_folder=None, dataset_directory=None, batch_dice=True, stage=None,
@@ -93,10 +93,11 @@ class UniSegExtractor_Trainer_DP(nnUNetTrainerV2_DP):
         print("copy code successfully!")
         self.task_index = [0 for _ in range(self.total_task_num)]
         ### Distribution Matching
-        self.update_target_iter = 1
+        self.update_target_iter = 5
         self.feature_space_dim = 32
         self.queue_size = 5000
         self.num_components = len(self.class_lst_to_std_mapping.keys())
+        self.return_est_dists = True
 
     def initialize_network(self):
         """
@@ -148,7 +149,8 @@ class UniSegExtractor_Trainer_DP(nnUNetTrainerV2_DP):
                                           self.class_lst_to_std_mapping, 
                                           self.task_id_class_lst_mapping,
                                           *uniseg_args, 
-                                          **uniseg_kwargs
+                                          with_wandb=self.with_wandb,
+                                        #   **uniseg_kwargs
                                         )
         self.network.inference_apply_nonlin = lambda x: x
         if torch.cuda.is_available():
@@ -260,7 +262,7 @@ class UniSegExtractor_Trainer_DP(nnUNetTrainerV2_DP):
                 
 
             ##### END ####
-
+            self.with_wandb = True
             self.initialize_network()
             self.loss = DynamicDistMatchingLoss(self.min_dist) # NOTE
             self.initialize_optimizer_and_scheduler()
@@ -339,10 +341,12 @@ class UniSegExtractor_Trainer_DP(nnUNetTrainerV2_DP):
                 tc_inds = []
                 i, j = 0, 0
                 while i < len(extractions) and j < len(target_classes):
-                    c = target_classes[j]
+                    # re-arrange dimensions for loss
+                    extractions[i] = extractions[i].permute(1, 0)
                     if extractions[i].size(-1) < 2:
                         _ = extractions.pop(i)
                     else:
+                        c = target_classes[j]
                         tc_inds.append(self.task_id_class_lst_mapping[int(task_id[0])][int(c)])
                         i += 1
                     j += 1
@@ -360,37 +364,40 @@ class UniSegExtractor_Trainer_DP(nnUNetTrainerV2_DP):
                     # self.mus, self.sigs = self.dynamic_dist_network(flat_tp_feats, self.mus, self.sigs, tc_inds)
 
                 del data
+                self.print_to_log_file(f"task_id: {task_id}")
                 # l = self.loss(output, target)
                 # l = self.loss(extractions, mus, sigs, tc_inds)
-                # l, est_dists = self.loss(extractions, mus, sigs, tc_inds, return_est_dists=True, with_sep_loss=self.network.update_target_dist)
-                self.print_to_log_file(f"task_id: {task_id}")
-                l, est_dists = self.loss.forward_gnlll(output, extractions, self.mus, self.sigs, target[0], tc_inds, return_est_dists=True, with_sep_loss=update_target_dist)
+                # l = self.loss(extractions, self.mus, self.sigs, tc_inds, return_est_dists=self.return_est_dists, with_sep_loss=update_target_dist)
+                l = self.loss.forward_gnlll(output, self.mus, self.sigs, target[0], tc_inds, pred_dists=extractions, return_est_dists=self.return_est_dists, with_sep_loss=update_target_dist)
                 # l = self.loss.gnlll(output, mus, sigs, target[0], tc_inds)
                 # l = self.loss.vec_gnlll(extractions, mus, sigs, tc_inds)
                 # print(f"gnll: {l.item()}")
-                # wandb.log({"loss": l.item()})
-                self.print_to_log_file(f"loss: {l.item()}")
-                assert not np.isnan(l.item())
+                
+                
                 # Test the dice score:
-                with torch.no_grad():
-                    est_seg = self.network.module.segment_from_dists(output, est_dists, self.class_lst_to_std_mapping)
-                    # NOTE change permute to be (0, num_classes_in_gt_seg, 1, ..., num_classes_in_gt_seg-1 )
-                    perm_dims = tuple([0, len(output.shape)-1] + list(range(1, len(output.shape)-1)))
-                    # est_seg = torch.nn.functional.one_hot(est_seg, self.task_class[int(task_id[0])]).permute(0, 4, 1, 2, 3)
-                    self.print_to_log_file(f"num classes in gt; {num_classes_in_gt}, {est_seg.unique()}")
-                    est_seg = torch.nn.functional.one_hot(est_seg, num_classes_in_gt)
-                    est_seg = torch.permute(est_seg, perm_dims)
-                    # dc_score = self.dc_loss(est_seg.unsqueeze(1), target[0])
-                    dc_score = self.dc_loss(est_seg, target[0])
-                    # self.print_to_log_file(f"Dice Score: {-dc_score.item()}")
-                    if do_backprop:
-                        # wandb.log({"train_dc": -dc_score.item()})
-                        self.print_to_log_file(f"train_dc {-dc_score.item()}")
-                    else:
-                        # wandb.log({"val_dc": -dc_score.item()})
-                        self.print_to_log_file(f"val_dc {-dc_score.item()}")
-
-
+                if self.return_est_dists:
+                    l, est_dists = l
+                    with torch.no_grad():
+                        est_seg = self.network.module.segment_from_dists(output, est_dists, self.class_lst_to_std_mapping)
+                        # NOTE change permute to be (0, num_classes_in_gt_seg, 1, ..., num_classes_in_gt_seg-1 )
+                        perm_dims = tuple([0, len(output.shape)-1] + list(range(1, len(output.shape)-1)))
+                        # est_seg = torch.nn.functional.one_hot(est_seg, self.task_class[int(task_id[0])]).permute(0, 4, 1, 2, 3)
+                        self.print_to_log_file(f"num classes in gt; {num_classes_in_gt}, {est_seg.unique()}")
+                        est_seg = torch.nn.functional.one_hot(est_seg, num_classes_in_gt)
+                        est_seg = torch.permute(est_seg, perm_dims)
+                        # dc_score = self.dc_loss(est_seg.unsqueeze(1), target[0])
+                        dc_score = self.dc_loss(est_seg, target[0])
+                        # self.print_to_log_file(f"Dice Score: {-dc_score.item()}")
+                        if do_backprop:
+                            if self.with_wandb: wandb.log({"train_dc": -dc_score.item()})
+                            self.print_to_log_file(f"train_dc {-dc_score.item()}")
+                        else:
+                            if self.with_wandb: wandb.log({"val_dc": -dc_score.item()})
+                            self.print_to_log_file(f"val_dc {-dc_score.item()}")
+                
+                if self.with_wandb:
+                    wandb.log({"loss": l.item()})
+                self.print_to_log_file(f"loss: {l.item()}")
                 # TODO make method of network; features = network output
                 # Updated Queues
                 # pick random element from extraction 

@@ -93,6 +93,10 @@ def main():
                              'Optional. Beta. Use with caution.')
     parser.add_argument('-exp_name', type=str, required=True, default=None,
                         help='exp name')
+    parser.add_argument("--with_wandb", required=False, default=False, action="store_true",
+                        help="log data with wandb")
+    parser.add_argument('-wandb_project_name', type=str, required=False, default=None,
+                        help='wandb project name name')
     args = parser.parse_args()
 
     task = args.task
@@ -162,19 +166,20 @@ def main():
 
     trainer.initialize(not validation_only)
 
-    init_means, init_vars = trainer.mus, trainer.sigs
-    wandb.init(
-        project="Target-Distribution-Matching-UniSeg-Single-Task-HD",
-        config={
-            "exp_name": exp_name,
-            "debug": False,
-            "network": network, 
-            "initial_means": init_means, 
-            "initial_vars": init_vars, 
-            "feature_space_dim": 32, 
-            "task": "Prostate"
-        }
-    )
+    if args.with_wandb:
+        init_means, init_vars = trainer.mus, trainer.sigs
+        wandb.init(
+            project=args.wandb_project_name,
+            config={
+                "exp_name": exp_name,
+                "debug": False,
+                "network": network, 
+                "initial_means": init_means, 
+                "initial_vars": init_vars, 
+                "feature_space_dim": 32, 
+                "task": "Prostate"
+            }
+        )
 
     if find_lr:
         trainer.find_lr()

@@ -175,6 +175,8 @@ class DynamicDistMatchingLoss(nn.Module):
             # Clip variance if too large
             # pred_dist_var = torch.clamp(pred_dist_var, max=1000.0) + torch.eye(pred_dist_var.shape[-1], device=pred_dist_var.device) * 1e-04
             pred_dist_var = torch.clamp(pred_dist_var, max=1000.0) #+ torch.eye(pred_dist_var.shape[-1], device=pred_dist_var.device) * 1e-04
+            if not is_positive_definite(pred_dist_var):
+                pred_dist_var = 1. * torch.eye(pred_dist_var.size(-1), device=pred_dist_var.device)
 
             
             # NOTE Need to generalize to Multivaraite
@@ -215,7 +217,7 @@ class DynamicDistMatchingLoss(nn.Module):
         
         return total_loss
     
-    def forward_gnlll(self, output, pred_dists, means, covs, gt_seg, indices, handle_nan=False, return_est_dists=False, with_sep_loss=True):
+    def forward_gnlll(self, output, means, covs, gt_seg, indices, handle_nan=False, pred_dists=None, return_est_dists=False, with_sep_loss=True):
         # total_gnlll = self.vec_gnlll(pred_dists, means, covs, indices, handle_nan=handle_nan, return_est_dists=return_est_dists)
         total_gnlll = self.gnlll(output, means, covs, gt_seg, indices)
 
@@ -233,7 +235,7 @@ class DynamicDistMatchingLoss(nn.Module):
         # total_loss = total_kl_div - sep_loss
         total_loss = total_gnlll + sep_loss
         
-        print(f"total loss: {total_loss} = total gnlll div ({total_gnlll}) + sep loss ({sep_loss})")
+        print(f"total loss: {total_loss} = total gnlll ({total_gnlll}) + sep loss ({sep_loss})")
         # wandb.log({"gnlll": total_gnlll, "sep_loss": sep_loss})
         
         if return_est_dists: return total_loss, est_dists
