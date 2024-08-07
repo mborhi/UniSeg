@@ -6,7 +6,7 @@ import torch.nn.functional as F
 
 class DynamicDistMatchingLoss(nn.Module):
 
-    def __init__(self, min_dist, cuda_id = -1) -> None:
+    def __init__(self, min_dist, loss_type="kl", cuda_id = -1) -> None:
         super().__init__()
 
         self.cuda_id = cuda_id
@@ -16,6 +16,7 @@ class DynamicDistMatchingLoss(nn.Module):
 
         self.margin = torch.tensor(0.01)
         self.class_weights = [0.5, 2, 2, 2]
+        self.loss_type = loss_type
 
 
 
@@ -68,7 +69,7 @@ class DynamicDistMatchingLoss(nn.Module):
         #         msk = (gt_seg[b] == i)[0, :]
         #         l = l + total_gnlll[b][:,msk].mean()
 
-        l = 0
+        l = torch.tensor([0.], device=means.device)
         for i, ind in enumerate(indices):
             b_sum = 0
             num_elems = 0
@@ -195,7 +196,7 @@ class DynamicDistMatchingLoss(nn.Module):
         
         return total_kl_div
 
-    def forward(self, pred_dists, means, covs, indices, handle_nan=False, return_est_dists=False, with_sep_loss=True):
+    def forward_kl(self, pred_dists, means, covs, indices, handle_nan=False, return_est_dists=False, with_sep_loss=True):
         total_kl_div = self.get_distribution_loss(pred_dists, means, covs, indices, handle_nan=handle_nan, return_est_dists=return_est_dists)
 
         if return_est_dists:
@@ -270,6 +271,12 @@ class DynamicDistMatchingLoss(nn.Module):
             est_dists.append(pred_dist)
 
         return est_dists
+
+    def forward(self, *args, **kwargs):
+        if self.loss_type == "kl" :
+            return self.forward_kl(*args, **kwargs)
+        else:
+            return self.forward_gnlll(*args, **kwargs)
 
 def is_positive_definite(mat):
     try:

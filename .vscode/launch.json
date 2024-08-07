@@ -3,6 +3,55 @@
     "version": "0.2.0",
     "configurations": [
         {
+            "name": "Debug DP UniSegExtractor_Trainer_Fast_DP",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "nnunet.run.run_training_DP",
+            // "args": ["3d_fullres", "UniSeg_Trainer", "97", "0", "-exp_name", "TaskPromptFeatureExtractor"], "--with_wandb", "-wandb_project_name", "TargetedDistMatchingUniseg_Fast_DP"
+            "args": ["3d_fullres", "UniSegExtractor_Trainer_Fast_DP", "96", "0", "-exp_name", "TaskPromptFeatureExtractor_Fast_DP_debug", "-gpus", "2", "--dbs"],
+            "env": {
+                "CUDA_VISIBLE_DEVICES": "0,1",
+                "nnUNet_n_proc_DA": "32"
+            },
+            "cwd": "${workspaceFolder}",
+            "console":"integratedTerminal",
+            "justMyCode": false
+
+        },
+        {
+            "name": "Debug DP UniSegExtractor_Trainer_DP",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "nnunet.run.run_training_DP",
+            // "args": ["3d_fullres", "UniSeg_Trainer", "97", "0", "-exp_name", "TaskPromptFeatureExtractor"],
+            "args": ["3d_fullres", "UniSegExtractor_Trainer_DP", "22", "0", "-exp_name", "TaskPromptFeatureExtractor_DP_debug", "-gpus", "2", "--dbs", "--with_wandb", "-wandb_project_name", "TargetedDistMatchingUniseg_DP"],
+            "env": {
+                "CUDA_VISIBLE_DEVICES": "0,1",
+                "nnUNet_n_proc_DA": "32"
+            },
+            "cwd": "${workspaceFolder}",
+            "console":"integratedTerminal",
+            "justMyCode": false
+
+        },
+        {
+            "name": "Debug DP TaskPromptFeatureExtractor",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "nnunet.run.run_training_DP",
+            // "args": ["3d_fullres", "UniSeg_Trainer", "97", "0", "-exp_name", "TaskPromptFeatureExtractor"],
+            "args": ["3d_fullres", "UniSeg_Trainer_DP", "99", "0", "-exp_name", "TaskPromptFeatureExtractor_DP_debug", "-gpus", "2", "--dbs"],
+            "env": {
+                "CUDA_VISIBLE_DEVICES": "0,1",
+                "CUDA_LAUNCH_BLOCKING": "1",
+                "nnUNet_n_proc_DA": "32"
+            },
+            "cwd": "${workspaceFolder}",
+            "console":"integratedTerminal",
+            "justMyCode": false
+
+        },
+        {
             "name": "Python Debugger: Current File",
             "type": "debugpy",
             "request": "launch",
@@ -15,7 +64,7 @@
             "request": "launch",
             "module": "nnunet.run.run_training",
             // "args": ["3d_fullres", "UniSeg_Trainer", "97", "0", "-exp_name", "TaskPromptFeatureExtractor"],
-            "args": ["3d_fullres", "UniSeg_Trainer", "20", "0", "-exp_name", "TaskPromptFeatureExtractor"],
+            "args": ["3d_fullres", "UniSeg_Trainer", "96", "0", "-exp_name", "TaskPromptFeatureExtractor"],
             "env": {
                 "CUDA_VISIBLE_DEVICES": "0",
                 "nnUNet_n_proc_DA": "12"

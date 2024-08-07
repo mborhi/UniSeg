@@ -28,7 +28,7 @@ class GaussianMixtureModel:
     # https://discuss.pytorch.org/t/torch-distributions-multivariatenormal-log-prob-throws-runtimeerror-cuda-error-cublas-status-not-supported-for-large-batch-sizes/177977
     # https://discuss.pytorch.org/t/how-to-use-torch-distributions-multivariate-normal-multivariatenormal-in-multi-gpu-mode/135030/3
     def chunk_log_prob(self, value, dist):
-        chunk_size = 262140
+        chunk_size = int(262140 *  (2 / value.size(0)))
         if value.size(1) <= chunk_size:
             return dist.log_prob(value)
         else:
