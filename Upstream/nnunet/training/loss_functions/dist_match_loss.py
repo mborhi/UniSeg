@@ -2,11 +2,11 @@ import torch
 import torch.nn as nn
 from torch.distributions import Distribution, Normal, MultivariateNormal, kl_divergence
 import torch.nn.functional as F
-# import wandb 
+import wandb 
 
 class DynamicDistMatchingLoss(nn.Module):
 
-    def __init__(self, min_dist, loss_type="kl", cuda_id = -1) -> None:
+    def __init__(self, min_dist, loss_type="kl", with_wandb=False, cuda_id = -1) -> None:
         super().__init__()
 
         self.cuda_id = cuda_id
@@ -18,6 +18,7 @@ class DynamicDistMatchingLoss(nn.Module):
         self.class_weights = [0.5, 2, 2, 2]
         self.loss_type = loss_type
 
+        self.with_wandb = with_wandb
 
 
     def multi_class_gnlll(self, features, means, covs, gt_seg, indices):
@@ -212,7 +213,8 @@ class DynamicDistMatchingLoss(nn.Module):
         total_loss = total_kl_div + sep_loss
         
         print(f"total loss: {total_loss} = total kl div ({total_kl_div}) + sep loss ({sep_loss})")
-        # wandb.log({"kl_div": total_kl_div, "sep_loss": sep_loss})
+        if self.with_wandb:
+            wandb.log({"kl_div": total_kl_div, "sep_loss": sep_loss})
         
         if return_est_dists: return total_loss, est_dists
         
@@ -237,7 +239,8 @@ class DynamicDistMatchingLoss(nn.Module):
         total_loss = total_gnlll + sep_loss
         
         print(f"total loss: {total_loss} = total gnlll ({total_gnlll}) + sep loss ({sep_loss})")
-        # wandb.log({"gnlll": total_gnlll, "sep_loss": sep_loss})
+        if self.with_wandb:
+            wandb.log({"gnlll": total_gnlll, "sep_loss": sep_loss})
         
         if return_est_dists: return total_loss, est_dists
         

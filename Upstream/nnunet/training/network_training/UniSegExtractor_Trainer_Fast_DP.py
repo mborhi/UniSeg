@@ -44,22 +44,22 @@ class UniSegExtractor_Trainer_Fast_DP(nnUNetTrainerV2_DP):
         # self.task = {"live":0, "kidn":1, "hepa":2, "panc":3, "colo":4, "lung":5, "sple":6, "sub-":7, "pros":8, "BraT":9, "PETC": 10}
         self.task = {"live":0, "kidn":1, "hepa":2, "panc":3, "colo":4, "lung":5, "sple":6, "sub-":7, "pros":8, "BraT":9, "PETC": 10}
         self.task_class = {0: 3, 1: 3, 2: 3, 3: 3, 4: 2, 5: 2, 6: 2, 7: 2, 8: 2, 9: 4, 10: 2}
-        # self.task_id_class_lst_mapping = {
-        #     8: [0, 1], 
-        # }
         self.task_id_class_lst_mapping = {
-            0: [0, 1, 2], 
-            1: [0, 3, 4], 
-            2: [0, 5, 6], 
-            3: [0, 7, 8], 
-            4: [0, 9], 
-            5: [0, 10], 
-            6: [0, 11], 
-            7: [0, 12], 
-            8: [0, 13], 
-            9: [0, 14, 15, 16], 
-            10: [0, 17]
+            8: [0, 1], 
         }
+        # self.task_id_class_lst_mapping = {
+        #     0: [0, 1, 2], 
+        #     1: [0, 3, 4], 
+        #     2: [0, 5, 6], 
+        #     3: [0, 7, 8], 
+        #     4: [0, 9], 
+        #     5: [0, 10], 
+        #     6: [0, 11], 
+        #     7: [0, 12], 
+        #     8: [0, 13], 
+        #     9: [0, 14, 15, 16], 
+        #     10: [0, 17]
+        # }
         # self.task_id_class_lst_mapping = {
         #     0: [0, 1, 2], 
         #     1: [0, 3, 4], 
@@ -95,7 +95,7 @@ class UniSegExtractor_Trainer_Fast_DP(nnUNetTrainerV2_DP):
         self.task_index = [0 for _ in range(self.total_task_num)]
         ### Distribution Matching
         self.update_target_iter = 5
-        self.feature_space_dim = 32
+        self.feature_space_dim = 4
         self.queue_size = 5000
         self.num_components = len(self.class_lst_to_std_mapping.keys())
         self.return_est_dists = True
@@ -242,7 +242,7 @@ class UniSegExtractor_Trainer_Fast_DP(nnUNetTrainerV2_DP):
                 pass
 
             ######  Initialize target distributions #####
-
+            torch.cuda.manual_seed_all(42)
             max_var = 0.001
             delta=1-(1e-03)
             # NOTE just use linspace here
@@ -271,10 +271,16 @@ class UniSegExtractor_Trainer_Fast_DP(nnUNetTrainerV2_DP):
                 
 
             ##### END ####
-            self.with_wandb = True
-            self.loss = DynamicDistMatchingLoss(self.min_dist, loss_type="gnlll") # NOTE
+            self.with_wandb = wandb.run is not None
+            self.loss = DynamicDistMatchingLoss(self.min_dist, loss_type="gnlll", with_wandb=self.with_wandb) # NOTE
             self.initialize_network()
             self.initialize_optimizer_and_scheduler()
+
+            ### INITIALIZE QUEUES ###
+            self.feature_space_qs = [[] for _ in range(self.num_components)]
+            self.best_feature_space_qs = None
+            self.update_size = 100
+            ### END ###
 
             assert isinstance(self.network, (SegmentationNetwork, nn.DataParallel))
         else:
@@ -325,8 +331,8 @@ class UniSegExtractor_Trainer_Fast_DP(nnUNetTrainerV2_DP):
         if run_online_evaluation:
             # train GMMs
             if not self.network.module.gmm_fitted:
-                self.network.module.init_gmms(self.mus, self.sigs)
-                self.network.module.train_gmms(self.dynamic_dist_network.module.feature_space_qs, self.mus, self.sigs)
+                # self.network.module.init_gmms(self.mus, self.sigs)
+                self.network.module.train_gmms(self.feature_space_qs, self.mus, self.sigs)
 
         if self.fp16:
             with autocast():
@@ -335,21 +341,21 @@ class UniSegExtractor_Trainer_Fast_DP(nnUNetTrainerV2_DP):
                 target_classes = target[0].unique().detach().cpu().numpy()
                 input_mus, input_sigs = self.mus[None, ].repeat(data.size(0), 1, 1), self.sigs[None, :].repeat(data.size(0), 1, 1, 1)
                 l, repr_elements, tc_inds = self.network(data,
-                                                        input_mus, 
-                                                        input_sigs, 
-                                                        task_id=task_id, 
+                                                        task_id, 
+                                                        mus=input_mus, 
+                                                        sigs=input_sigs, 
                                                         gt_seg=target[0], 
                                                         target_classes=target_classes, 
-                                                        return_dc_score=do_backprop,
+                                                        return_dc_score=True,
                                                         update_target_dist=update_target_dist, 
-                                                        for_loss=True
+                                                        for_backprop=True
                                                         )
 
                 # reduce tc_inds back to ints
                 tc_inds = [ind[0].item() for ind in tc_inds]
-                if do_backprop:
-                    l, dc_score = l
-                    dc_score = torch.mean(dc_score)
+                # if do_backprop:
+                l, dc_score = l
+                dc_score = torch.mean(dc_score)
                 
                 # NOTE sanity check output
                 # output = torch.zeros_like(target[0], dtype=torch.float, device=data.device).repeat(1, self.feature_space_dim, 1, 1, 1)
@@ -388,10 +394,17 @@ class UniSegExtractor_Trainer_Fast_DP(nnUNetTrainerV2_DP):
                 if self.with_wandb:
                     wandb.log({"loss": l.item()})
                 self.print_to_log_file(f"loss: {l.item()}")
-                # TODO make method of network; features = network output
+
                 # Updated Queues
-                # pick random element from extraction 
-                self.dynamic_dist_network.module.update_queues(repr_elements, tc_inds)
+                # self.dynamic_dist_network.module.update_queues(repr_elements, tc_inds)
+                if do_backprop:
+                    for i, task_id in enumerate(tc_inds):
+                        # Enqueue and Dequeue
+                        if len(self.feature_space_qs[task_id]) + self.update_size > self.queue_size:
+                            for i in range(len(self.feature_space_qs[task_id]) + self.update_size - self.queue_size):
+                                self.feature_space_qs[task_id].pop(0)
+                        
+                        self.feature_space_qs[task_id].append(repr_elements[i].reshape(-1, self.feature_space_dim))
 
             if do_backprop:
                 # self.amp_grad_scaler.scale(l).backward(retain_graph=True) # NOTE
@@ -406,8 +419,7 @@ class UniSegExtractor_Trainer_Fast_DP(nnUNetTrainerV2_DP):
         if run_online_evaluation:
             # train GMMs
             if not self.network.module.gmm_fitted:
-                self.network.module.init_gmms(self.mus, self.sigs)
-                self.network.module.train_gmms(self.dynamic_dist_network.feature_space_qs, self.mus, self.sigs)
+                self.network.module.train_gmms(self.feature_space_qs, self.mus, self.sigs)
 
             tp_hard, fp_hard, fn_hard = self.network.module.seg_and_eval(data, task_id, gt_seg=target[0], **{})
             self.run_online_evaluation(tp_hard, fp_hard, fn_hard)
@@ -450,6 +462,8 @@ class UniSegExtractor_Trainer_Fast_DP(nnUNetTrainerV2_DP):
 
         current_mode = self.network.training
         self.network.eval()
+
+        # initialize and assign gmms
 
         assert self.was_initialized, "must initialize, ideally with checkpoint (or train first)"
         if self.dataset_val is None:

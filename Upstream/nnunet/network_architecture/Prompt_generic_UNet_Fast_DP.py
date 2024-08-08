@@ -179,12 +179,10 @@ class UniSegExtractor_Fast_DP(UniSeg_model):
         for i in range(self.num_tasks):
             self.gaussian_mixtures[i].means_ = means[i].detach().cpu().numpy()
             self.gaussian_mixtures[i].covariances_ = vars[i].detach().cpu().numpy()#.item() * np.eye(self.feature_space_dim)
-    
 
     def train_gmms(self, feature_space_qs, mus, sigs):
         if not self.gmm_fitted :
             self.init_gmms(mus, sigs)
-            self.gmm_fitted = True
 
         # Train using queue
         trained_indices = []
@@ -251,7 +249,7 @@ class UniSegExtractor_Fast_DP(UniSeg_model):
 
         self.feature_space_gmm = GaussianMixtureModel(categorical, comp_dists)
 
-    def forward(self, x, mus, sigs, task_id=None, for_backprop=False, **kwargs):
+    def forward(self, x, task_id, mus=None, sigs=None, for_backprop=False, **kwargs):
         """
         if training: return loss
         """

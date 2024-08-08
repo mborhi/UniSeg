@@ -38,27 +38,29 @@ class UniSegExtractor_Trainer_DP(nnUNetTrainerV2_DP):
                  unpack_data=True, deterministic=True, num_gpus=2, distribute_batch_size=False, fp16=False):
         super().__init__(plans_file, fold, output_folder, dataset_directory, batch_dice, stage, unpack_data,
                          deterministic, num_gpus, distribute_batch_size, fp16)
-        self.max_num_epochs = 10
+        self.max_num_epochs = 1000
         # self.max_num_epochs = 1000
         # self.task = {"live":0, "kidn":1, "hepa":2, "panc":3, "colo":4, "lung":5, "sple":6, "sub-":7, "pros":8, "BraT":9, "PETC": 10}
-        self.task = {"live":0, "kidn":1, "hepa":2, "panc":3, "colo":4, "lung":5, "sple":6, "sub-":7, "pros":8, "BraT":9, "PETC": 10}
-        self.task_class = {0: 3, 1: 3, 2: 3, 3: 3, 4: 2, 5: 2, 6: 2, 7: 2, 8: 2, 9: 4, 10: 2}
-        # self.task_id_class_lst_mapping = {
-        #     8: [0, 1], 
-        # }
+        self.task = {"pros":0}
+        self.task_class = {0: 2}
+        # self.task = {"live":0, "kidn":1, "hepa":2, "panc":3, "colo":4, "lung":5, "sple":6, "sub-":7, "pros":8, "BraT":9, "PETC": 10}
+        # self.task_class = {0: 3, 1: 3, 2: 3, 3: 3, 4: 2, 5: 2, 6: 2, 7: 2, 8: 2, 9: 4, 10: 2}
         self.task_id_class_lst_mapping = {
-            0: [0, 1, 2], 
-            1: [0, 3, 4], 
-            2: [0, 5, 6], 
-            3: [0, 7, 8], 
-            4: [0, 9], 
-            5: [0, 10], 
-            6: [0, 11], 
-            7: [0, 12], 
-            8: [0, 13], 
-            9: [0, 14, 15, 16], 
-            10: [0, 17]
+            0: [0, 1], 
         }
+        # self.task_id_class_lst_mapping = {
+        #     0: [0, 1, 2], 
+        #     1: [0, 3, 4], 
+        #     2: [0, 5, 6], 
+        #     3: [0, 7, 8], 
+        #     4: [0, 9], 
+        #     5: [0, 10], 
+        #     6: [0, 11], 
+        #     7: [0, 12], 
+        #     8: [0, 13], 
+        #     9: [0, 14, 15, 16], 
+        #     10: [0, 17]
+        # }
         # self.task_id_class_lst_mapping = {
         #     0: [0, 1, 2], 
         #     1: [0, 3, 4], 
@@ -81,8 +83,8 @@ class UniSegExtractor_Trainer_DP(nnUNetTrainerV2_DP):
                 
         print("task_class", self.task_class)
         self.visual_epoch = -1
-        self.total_task_num = 11
-        self.num_batches_per_epoch = int(50 * self.total_task_num)
+        self.total_task_num = 1 # NOTE
+        self.num_batches_per_epoch = int((50 // 1) * self.total_task_num)
         print("num batches per epoch:", self.num_batches_per_epoch)
         print("total task num", self.total_task_num)
         print(os.getcwd())
@@ -93,7 +95,7 @@ class UniSegExtractor_Trainer_DP(nnUNetTrainerV2_DP):
         print("copy code successfully!")
         self.task_index = [0 for _ in range(self.total_task_num)]
         ### Distribution Matching
-        self.update_target_iter = 5
+        self.update_target_iter = 10
         self.feature_space_dim = 32
         self.queue_size = 5000
         self.num_components = len(self.class_lst_to_std_mapping.keys())
@@ -233,7 +235,7 @@ class UniSegExtractor_Trainer_DP(nnUNetTrainerV2_DP):
                 pass
 
             ######  Initialize target distributions #####
-
+            torch.cuda.manual_seed_all(42)
             max_var = 0.001
             delta=1-(1e-03)
             # NOTE just use linspace here
@@ -262,9 +264,9 @@ class UniSegExtractor_Trainer_DP(nnUNetTrainerV2_DP):
                 
 
             ##### END ####
-            self.with_wandb = True
+            self.with_wandb = wandb.run is not None
             self.initialize_network()
-            self.loss = DynamicDistMatchingLoss(self.min_dist) # NOTE
+            self.loss = DynamicDistMatchingLoss(self.min_dist, loss_type="kl", with_wandb=self.with_wandb) # NOTE
             self.initialize_optimizer_and_scheduler()
 
             assert isinstance(self.network, (SegmentationNetwork, nn.DataParallel))
@@ -382,8 +384,8 @@ class UniSegExtractor_Trainer_DP(nnUNetTrainerV2_DP):
                         # NOTE change permute to be (0, num_classes_in_gt_seg, 1, ..., num_classes_in_gt_seg-1 )
                         perm_dims = tuple([0, len(output.shape)-1] + list(range(1, len(output.shape)-1)))
                         # est_seg = torch.nn.functional.one_hot(est_seg, self.task_class[int(task_id[0])]).permute(0, 4, 1, 2, 3)
-                        self.print_to_log_file(f"num classes in gt; {num_classes_in_gt}, {est_seg.unique()}")
-                        est_seg = torch.nn.functional.one_hot(est_seg, num_classes_in_gt)
+                        # self.print_to_log_file(f"num classes in gt; {num_classes_in_gt}, {est_seg.unique()}")
+                        est_seg = torch.nn.functional.one_hot(est_seg, self.num_classes)
                         est_seg = torch.permute(est_seg, perm_dims)
                         # dc_score = self.dc_loss(est_seg.unsqueeze(1), target[0])
                         dc_score = self.dc_loss(est_seg, target[0])
@@ -416,7 +418,7 @@ class UniSegExtractor_Trainer_DP(nnUNetTrainerV2_DP):
         if run_online_evaluation:
             # train GMMs
             if not self.network.module.gmm_fitted:
-                self.network.module.init_gmms(self.mus, self.sigs)
+                # self.network.module.init_gmms(self.mus, self.sigs)
                 self.network.module.train_gmms(self.dynamic_dist_network.feature_space_qs, self.mus, self.sigs)
             # self.network.construct_torch_gmm()
             # segment output

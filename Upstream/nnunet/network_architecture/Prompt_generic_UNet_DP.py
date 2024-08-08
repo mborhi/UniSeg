@@ -51,6 +51,7 @@ class DynamicDistributionModel_DP(nn.Module):
 
         self.queue_size = queue_size
         self.feature_space_qs = [[] for i in range(num_components)]
+        self.best_feature_space_qs = None
         
 
     def update_queues(self, feature_extracts, tc_inds):
@@ -72,6 +73,15 @@ class DynamicDistributionModel_DP(nn.Module):
 
         for i in range(self.num_components):
             self.feature_space_qs[i] = []
+
+    def set_best_feature_space_qs(self):
+
+        self.best_feature_space_qs = copy.deepcopy(self.feature_space_qs)
+
+    def use_best_feature_space_qs(self):
+
+        self.feature_space_qs = self.best_feature_space_qs
+        
 
 
     def distance_bounds(self, k=None, max_var=None, delta=None, m=None, n=1, n_min=1):
@@ -796,12 +806,13 @@ class UniSegExtractor_DP(UniSeg_model):
         for i in range(self.num_tasks):
             self.gaussian_mixtures[i].means_ = means[i].detach().cpu().numpy()
             self.gaussian_mixtures[i].covariances_ = vars[i].detach().cpu().numpy()#.item() * np.eye(self.feature_space_dim)
+
+        self.gmm_fitted = True
     
 
     def train_gmms(self, feature_space_qs, mus, sigs):
         if not self.gmm_fitted :
             self.init_gmms(mus, sigs)
-            self.gmm_fitted = True
 
         # Train using queue
         trained_indices = []

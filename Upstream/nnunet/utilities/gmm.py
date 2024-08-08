@@ -29,8 +29,12 @@ class GaussianMixtureModel:
     # https://discuss.pytorch.org/t/how-to-use-torch-distributions-multivariate-normal-multivariatenormal-in-multi-gpu-mode/135030/3
     def chunk_log_prob(self, value, dist):
         chunk_size = int(262140 *  (2 / value.size(0)))
+        val_dev = value.device
         if value.size(1) <= chunk_size:
-            return dist.log_prob(value)
+            if not self.all_same_device(value, dist): 
+                value = value.to(device=dist.loc.device)
+                #dist = self.move_dist_to_device(dist, value.device)
+            return dist.log_prob(value).to(device=val_dev)
         else:
             num_chunks = (value.size(1) + chunk_size - 1) // chunk_size
             log_probs = []
@@ -38,7 +42,10 @@ class GaussianMixtureModel:
                 start_idx = i * chunk_size
                 end_idx = min((i + 1) * chunk_size, value.size(1))
                 chunk = value[:, start_idx:end_idx]#.cpu()  # Move to CPU
-                log_probs.append(dist.log_prob(chunk))#.cuda())  # Move back to GPU if needed
+                if not self.all_same_device(chunk, dist): 
+                    #dist = self.move_dist_to_device(dist, chunk.device)
+                    chunk = chunk.to(device=dist.loc.device)
+                log_probs.append(dist.log_prob(chunk).to(device=val_dev))#.cuda())  # Move back to GPU if needed
             return torch.cat(log_probs, dim=1)
 
     def score(self, value, chunk=True):
@@ -59,4 +66,22 @@ class GaussianMixtureModel:
         device = dists[0].covariance_matrix.device
         self.component_distributions = dists
         self.categorical = Categorical(torch.ones(num_dists, device=device) / num_dists)
-        
+
+    def move_dist_to_device(self, dist, device):
+        dist.loc = dist.loc.to(device=device)
+        dist.covariance_matrix = dist.covariance_matrix.to(device=device) 
+        dist.precision_matrix = dist.precision_matrix.to(device=device)
+        dist.scale_tril = dist.scale_tril.to(device=device)
+
+        if dist._unbroadcasted_scale_tril is not None:
+            dist._unbroadcasted_scale_tril = dist._unbroadcasted_scale_tril.to(device=device) 
+
+        return dist
+    
+    def all_same_device(self, value, dist: MultivariateNormal):
+        device = value.device
+
+        if dist.loc.device != device or dist.covariance_matrix.device != device or dist.precision_matrix.device != device or dist.scale_tril.device != device:
+            return False 
+
+        return True

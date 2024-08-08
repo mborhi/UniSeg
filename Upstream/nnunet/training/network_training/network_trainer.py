@@ -435,6 +435,7 @@ class NetworkTrainer(object):
         if not self.was_initialized:
             self.initialize(True)
 
+        best_val_eval_metric = -1.
         while self.epoch < self.max_num_epochs:
             self.print_to_log_file("\nepoch: ", self.epoch)
             epoch_start_time = time()
@@ -455,10 +456,11 @@ class NetworkTrainer(object):
                         break # NOTE
             else:
                 for _ in range(self.num_batches_per_epoch):
+                    self.print_to_log_file("iteration:", _)
                     l = self.run_iteration(self.tr_gen, True) # NOTE With backprop
                     # l = self.run_iteration(self.tr_gen, True, True) # NOTE for debug
                     train_losses_epoch.append(l)
-                    # if self.epoch == 5: break # NOTE
+                    # if _ == 10: break # NOTE
 
             # print("task_pool", self.task_index)
             self.print_to_log_file("task_pool: "+str(self.task_index))
@@ -495,8 +497,33 @@ class NetworkTrainer(object):
                     self.print_to_log_file("validation loss (train=True): %.4f" % self.all_val_losses_tr_mode[-1])
             self.update_train_loss_MA()  # needed for lr scheduler and stopping of training
 
-            if self.epoch + 1 < self.max_num_epochs:
-                if isinstance(self.network, DataParallel):
+
+
+            continue_training = self.on_epoch_end()
+
+            if self.all_val_eval_metrics[-1] > best_val_eval_metric:
+                if isinstance(self.dynamic_dist_network, DataParallel):
+                    self.best_feature_space_qs = self.feature_space_qs
+                elif isinstance(self.network, DataParallel):
+                    self.dynamic_dist_network.set_best_feature_space_qs()
+                else:
+                    self.network.set_best_feature_space_qs()
+
+                best_val_eval_metric = self.all_val_eval_metrics[-1]
+
+
+            if self.epoch + 1 == self.max_num_epochs:
+                if isinstance(self.dynamic_dist_network, DataParallel):
+                    self.feature_space_qs = self.best_feature_space_qs
+                elif isinstance(self.network, DataParallel):
+                    self.dynamic_dist_network.use_best_feature_space_qs()
+                else:
+                    self.network.use_best_feature_space_qs()
+
+            else:# self.epoch + 1 < self.max_num_epochs:
+                if isinstance(self.dynamic_dist_network, DataParallel):
+                    self.feature_space_qs = [[] for _ in range(self.num_components)]
+                elif isinstance(self.network, DataParallel):
                     # set gmm learned to false
                     self.network.module.gmm_fitted = False
                     # clear queues
@@ -507,7 +534,6 @@ class NetworkTrainer(object):
                     # clear queues
                     self.network.clear_queues()
 
-            continue_training = self.on_epoch_end()
 
             epoch_end_time = time()
 
