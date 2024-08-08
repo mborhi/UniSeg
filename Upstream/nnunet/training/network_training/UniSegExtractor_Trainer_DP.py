@@ -83,7 +83,7 @@ class UniSegExtractor_Trainer_DP(nnUNetTrainerV2_DP):
                 
         print("task_class", self.task_class)
         self.visual_epoch = -1
-        self.total_task_num = 1 # NOTE
+        self.total_task_num = 11 # NOTE
         self.num_batches_per_epoch = int((50 // 4) * self.total_task_num)
         print("num batches per epoch:", self.num_batches_per_epoch)
         print("total task num", self.total_task_num)
