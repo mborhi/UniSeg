@@ -84,7 +84,7 @@ class UniSegExtractor_Trainer_DP(nnUNetTrainerV2_DP):
         print("task_class", self.task_class)
         self.visual_epoch = -1
         self.total_task_num = 11 # NOTE
-        self.num_batches_per_epoch = int((50 // 2) * self.total_task_num)
+        self.num_batches_per_epoch = int((50 // 4) * self.total_task_num)
         print("num batches per epoch:", self.num_batches_per_epoch)
         print("total task num", self.total_task_num)
         print(os.getcwd())
@@ -96,7 +96,7 @@ class UniSegExtractor_Trainer_DP(nnUNetTrainerV2_DP):
         self.task_index = [0 for _ in range(self.total_task_num)]
         ### Distribution Matching
         self.update_target_iter = 10
-        self.feature_space_dim = 32
+        self.feature_space_dim = 128
         self.queue_size = 5000
         self.num_components = len(self.class_lst_to_std_mapping.keys())
         self.return_est_dists = True
