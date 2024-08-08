@@ -24,13 +24,14 @@ class DynamicDistributionModel_DP(nn.Module):
         self.feature_space_dim = feature_space_dim 
         self.num_components = num_components 
         self.tp_dim = tp_dim
+        self.prompt_out_channel = 4
 
         hidden_dim = 1000
         
         self.task_mu_modules = nn.ModuleList([
             nn.Sequential(
                 # each task's mean of dim feature space (flattented), scalara vars for each task, task prompt dim, task_id
-                nn.Linear((feature_space_dim * num_components) + (1 * num_components) + tp_dim + 1, hidden_dim), 
+                nn.Linear((feature_space_dim * num_components) + (1 * num_components) + (self.prompt_out_channel*tp_dim) + 1, hidden_dim), 
                 nn.ReLU(), 
                 nn.Linear(hidden_dim, feature_space_dim),
                 nn.Tanh(), 
@@ -46,6 +47,19 @@ class DynamicDistributionModel_DP(nn.Module):
             )
             for t in range(num_components)
         ])
+
+        conv_kwargs = {'kernel_size': 3, 'stride': 1, 'padding': 1, 'dilation': 1, 'bias': True}
+        dropout_op_kwargs = {'p': 0.5, 'inplace': True}
+        norm_op_kwargs = {'eps': 1e-5, 'affine': True, 'momentum': 0.1}
+        self.prompt_conv = ConvDropoutNormNonlin(1, 
+                                                 self.prompt_out_channel, 
+                                                 nn.Conv3d, 
+                                                 conv_kwargs=conv_kwargs, 
+                                                 norm_op=nn.BatchNorm3d, 
+                                                 norm_op_kwargs=norm_op_kwargs,
+                                                 dropout_op=nn.Dropout3d, 
+                                                 dropout_op_kwargs=dropout_op_kwargs
+                                                 )
 
         self.momentum = momentum
 
@@ -119,7 +133,8 @@ class DynamicDistributionModel_DP(nn.Module):
 
     def forward(self, x, means, vars, tc_inds, with_momentum_update=True):
         # Returns: updated means and vars
-        
+        x = self.prompt_conv(x)
+        x = x.reshape(x.size(0), -1)
         # self.means = self.means.detach().clone().to(device=x.device)
         # self.vars = self.vars.detach().clone().to(device=x.device)
         means = means.detach().clone().to(device=x.device)
@@ -900,7 +915,7 @@ class UniSegExtractor_DP(UniSeg_model):
         gt_extractions = [extract_task_set(features, gt_seg, c, keep_dims=True).permute(1, 0) for c in target_classes]
 
         if update_target_dist:
-            flat_tp_feats = tp_feats.reshape(x.size(0), -1)
+            flat_tp_feats = tp_feats#tp_feats.reshape(x.size(0), -1)
             return (features, flat_tp_feats), gt_extractions
         
         return features, gt_extractions#, mus, sigs

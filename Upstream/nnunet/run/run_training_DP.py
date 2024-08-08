@@ -164,22 +164,23 @@ def main():
         trainer.save_best_checkpoint = False  # whether or not to save the best checkpoint according to self.best_val_eval_criterion_MA
         trainer.save_final_checkpoint = False  # whether or not to save the final checkpoint
 
-    trainer.initialize(not validation_only)
-
     if args.with_wandb:
-        init_means, init_vars = trainer.mus, trainer.sigs
         wandb.init(
             project=args.wandb_project_name,
             config={
                 "exp_name": exp_name,
                 "debug": False,
                 "network": network, 
-                "initial_means": init_means, 
-                "initial_vars": init_vars, 
                 "feature_space_dim": 32, 
                 "task": "Prostate"
             }
         )
+
+    trainer.initialize(not validation_only)
+
+    if args.with_wandb:
+        wandb.log({"init_mus": trainer.mus})
+        wandb.log({"init_sigs": trainer.sigs})
 
     if find_lr:
         trainer.find_lr()
