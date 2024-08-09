@@ -36,7 +36,8 @@ import wandb
 
 class UniSegExtractor_Trainer_Fast_DP(nnUNetTrainerV2_DP):
     def __init__(self, plans_file, fold, output_folder=None, dataset_directory=None, batch_dice=True, stage=None,
-                 unpack_data=True, deterministic=True, num_gpus=2, distribute_batch_size=False, fp16=False):
+                 unpack_data=True, deterministic=True, num_gpus=2, distribute_batch_size=False, fp16=False, 
+                 feature_space_dim=32, loss_type="kl", update_iter=10, queue_size=5000, max_num_epochs=1000):
         super().__init__(plans_file, fold, output_folder, dataset_directory, batch_dice, stage, unpack_data,
                          deterministic, num_gpus, distribute_batch_size, fp16)
         self.max_num_epochs = 1
@@ -94,9 +95,10 @@ class UniSegExtractor_Trainer_Fast_DP(nnUNetTrainerV2_DP):
         print("copy code successfully!")
         self.task_index = [0 for _ in range(self.total_task_num)]
         ### Distribution Matching
-        self.update_target_iter = 5
-        self.feature_space_dim = 32
-        self.queue_size = 5000
+        self.update_target_iter = update_iter
+        self.feature_space_dim = feature_space_dim
+        self.queue_size = queue_size
+        self.loss_type = loss_type
         self.num_components = len(self.class_lst_to_std_mapping.keys())
         self.return_est_dists = True
 
@@ -165,7 +167,7 @@ class UniSegExtractor_Trainer_Fast_DP(nnUNetTrainerV2_DP):
                                                                 self.num_components, 
                                                                 reduction='sum',
                                                                 momentum=0.999, 
-                                                                queue_size=5000
+                                                                queue_size=self.queue_size
                                                                 )
         if torch.cuda.is_available():
             self.dynamic_dist_network.cuda()
@@ -272,7 +274,7 @@ class UniSegExtractor_Trainer_Fast_DP(nnUNetTrainerV2_DP):
 
             ##### END ####
             self.with_wandb = wandb.run is not None
-            self.loss = DynamicDistMatchingLoss(self.min_dist, loss_type="gnlll", with_wandb=self.with_wandb) # NOTE
+            self.loss = DynamicDistMatchingLoss(self.min_dist, loss_type=self.loss_type, with_wandb=self.with_wandb) # NOTE
             self.initialize_network()
             self.initialize_optimizer_and_scheduler()
 

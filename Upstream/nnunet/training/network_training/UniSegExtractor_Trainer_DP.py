@@ -35,10 +35,11 @@ import wandb
 
 class UniSegExtractor_Trainer_DP(nnUNetTrainerV2_DP):
     def __init__(self, plans_file, fold, output_folder=None, dataset_directory=None, batch_dice=True, stage=None,
-                 unpack_data=True, deterministic=True, num_gpus=2, distribute_batch_size=False, fp16=False):
+                 unpack_data=True, deterministic=True, num_gpus=2, distribute_batch_size=False, fp16=False, 
+                 feature_space_dim=32, loss_type="kl", update_iter=10, queue_size=5000, max_num_epochs=1000):
         super().__init__(plans_file, fold, output_folder, dataset_directory, batch_dice, stage, unpack_data,
                          deterministic, num_gpus, distribute_batch_size, fp16)
-        self.max_num_epochs = 1000
+        self.max_num_epochs = max_num_epochs
         # self.max_num_epochs = 1000
         self.task = {"live":0, "kidn":1, "hepa":2, "panc":3, "colo":4, "lung":5, "sple":6, "sub-":7, "pros":8, "BraT":9, "PETC": 10}
         # self.task = {"pros":0}
@@ -84,7 +85,7 @@ class UniSegExtractor_Trainer_DP(nnUNetTrainerV2_DP):
         print("task_class", self.task_class)
         self.visual_epoch = -1
         self.total_task_num = 11 # NOTE
-        self.num_batches_per_epoch = int((50 // 4) * self.total_task_num)
+        self.num_batches_per_epoch = int((50 // (num_gpus // 2)) * self.total_task_num)
         print("num batches per epoch:", self.num_batches_per_epoch)
         print("total task num", self.total_task_num)
         print(os.getcwd())
@@ -95,11 +96,12 @@ class UniSegExtractor_Trainer_DP(nnUNetTrainerV2_DP):
         print("copy code successfully!")
         self.task_index = [0 for _ in range(self.total_task_num)]
         ### Distribution Matching
-        self.update_target_iter = 10
-        self.feature_space_dim = 128
-        self.queue_size = 5000
+        self.update_target_iter = update_iter
+        self.feature_space_dim = feature_space_dim
+        self.queue_size = queue_size
         self.num_components = len(self.class_lst_to_std_mapping.keys())
         self.return_est_dists = True
+        self.loss_type = loss_type
 
     def initialize_network(self):
         """
@@ -160,7 +162,7 @@ class UniSegExtractor_Trainer_DP(nnUNetTrainerV2_DP):
 
         self.tp_dim = int(self.network.intermediate_prompt.numel() / self.network.num_class)
         # Isn't actually DP, onyl used for further DP modules
-        self.dynamic_dist_network = DynamicDistributionModel_DP(self.feature_space_dim, self.tp_dim, self.num_components, momentum=0.999, queue_size=5000)
+        self.dynamic_dist_network = DynamicDistributionModel_DP(self.feature_space_dim, self.tp_dim, self.num_components, momentum=0.999, queue_size=self.queue_size)
         if torch.cuda.is_available():
             self.dynamic_dist_network.cuda()
 
@@ -269,7 +271,7 @@ class UniSegExtractor_Trainer_DP(nnUNetTrainerV2_DP):
             else:
                 self.with_wandb = False
             self.initialize_network()
-            self.loss = DynamicDistMatchingLoss(self.min_dist, loss_type="kl", with_wandb=self.with_wandb) # NOTE
+            self.loss = DynamicDistMatchingLoss(self.min_dist, loss_type=self.loss_type, with_wandb=self.with_wandb) # NOTE
             self.initialize_optimizer_and_scheduler()
 
             assert isinstance(self.network, (SegmentationNetwork, nn.DataParallel))

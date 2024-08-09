@@ -7,8 +7,8 @@
             "type": "debugpy",
             "request": "launch",
             "module": "nnunet.run.run_training_DP",
-            // "args": ["3d_fullres", "UniSeg_Trainer", "97", "0", "-exp_name", "TaskPromptFeatureExtractor"], "--with_wandb", "-wandb_project_name", "TargetedDistMatchingUniseg_Fast_DP"
-            "args": ["3d_fullres", "UniSegExtractor_Trainer_Fast_DP", "96", "0", "-exp_name", "TaskPromptFeatureExtractor_Fast_DP_debug", "-gpus", "2", "--dbs"],
+            "args": ["3d_fullres", "UniSegExtractor_Trainer_Fast_DP", "20", "0", "-exp_name", "TargetedDistMatchingUniSeg_Task20_GNLLL_Learned_DP", "--with_wandb", "-wandb_project_name", "TargetedDistMatchingUniseg_Fast_DP", "-gpus", "2", "--dbs"],
+            // "args": ["3d_fullres", "UniSegExtractor_Trainer_Fast_DP", "96", "0", "-exp_name", "TaskPromptFeatureExtractor_Fast_DP_debug", "-gpus", "2", "--dbs"],
             "env": {
                 "CUDA_VISIBLE_DEVICES": "0,1",
                 "nnUNet_n_proc_DA": "32"
@@ -24,7 +24,19 @@
             "request": "launch",
             "module": "nnunet.run.run_training_DP",
             // "args": ["3d_fullres", "UniSeg_Trainer", "97", "0", "-exp_name", "TaskPromptFeatureExtractor"],
-            "args": ["3d_fullres", "UniSegExtractor_Trainer_DP", "22", "0", "-exp_name", "TaskPromptFeatureExtractor_DP_debug", "-gpus", "2", "--dbs", "--with_wandb", "-wandb_project_name", "TargetedDistMatchingUniseg_DP"],
+            // "args": ["3d_fullres", "UniSegExtractor_Trainer_DP", "20", "0", "-exp_name", "TaskPromptFeatureExtractor_DP_debug", "-gpus", "2", "--dbs", "--with_wandb", "-wandb_project_name", "TargetedDistMatchingUniseg_DP"],
+            "args": [
+                "3d_fullres", 
+                "UniSegExtractor_Trainer_DP", 
+                "20", "0", 
+                "-feature_space_dim", "64", 
+                "-loss_type", "gnlll", 
+                "-update_iter", "1", 
+                "-queue_size", "5000", 
+                "-max_num_epochs", "5",
+                "-exp_name", "TaskPromptFeatureExtractor_DP_debug", 
+                "-gpus", "2", 
+                "--dbs"],
             "env": {
                 "CUDA_VISIBLE_DEVICES": "0,1",
                 "nnUNet_n_proc_DA": "32"

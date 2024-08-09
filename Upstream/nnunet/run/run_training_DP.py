@@ -67,6 +67,16 @@ def main():
     parser.add_argument("--find_lr", required=False, default=False, action="store_true", help="")
     parser.add_argument("--fp32", required=False, default=False, action="store_true",
                         help="disable mixed precision training and run old school fp32")
+    parser.add_argument("-feature_space_dim", required=False, default=32, type=int,
+                        help="feature space dimension of model")
+    parser.add_argument("-loss_type", required=False, default="kl", type=str,
+                        help="The loss type to use")
+    parser.add_argument("-update_iter", required=False, default=10, type=int,
+                        help="The number of training iterations after which to update the target")
+    parser.add_argument("-queue_size", required=False, default=5000, type=int,
+                        help="The size of each class' feature space queue")
+    parser.add_argument("-max_num_epochs", required=False, default=1000, type=int,
+                        help="The maximum number of epochs to run training for")
     parser.add_argument("--val_folder", required=False, default="validation_raw",
                         help="name of the validation folder. No need to use this for most people")
     parser.add_argument("--disable_saving", required=False, action='store_true',
@@ -156,7 +166,8 @@ def main():
     trainer = trainer_class(plans_file, fold, output_folder=output_folder_name,
                             dataset_directory=dataset_directory, batch_dice=batch_dice, stage=stage,
                             unpack_data=decompress_data, deterministic=deterministic,
-                            distribute_batch_size=args.dbs, num_gpus=num_gpus, fp16=not fp32)
+                            distribute_batch_size=args.dbs, num_gpus=num_gpus, fp16=not fp32,
+                            feature_space_dim=args.feature_space_dim, loss_type=args.loss_type, update_iter=args.update_iter, queue_size=args.queue_size, max_num_epochs=args.max_num_epochs)
 
     if args.disable_saving:
         trainer.save_latest_only = False  # if false it will not store/overwrite _latest but separate files each
