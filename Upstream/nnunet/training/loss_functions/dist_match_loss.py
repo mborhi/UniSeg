@@ -246,6 +246,9 @@ class DynamicDistMatchingLoss(nn.Module):
         
         return total_loss
 
+    def foreward_foreground_only(self, *args, **kwargs):
+        pass
+
     def get_est_dists(self, pred_dists, indices, handle_nan=False):
         est_dists = []
         total_kl_div = 0

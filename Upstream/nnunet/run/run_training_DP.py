@@ -77,6 +77,8 @@ def main():
                         help="The size of each class' feature space queue")
     parser.add_argument("-max_num_epochs", required=False, default=1000, type=int,
                         help="The maximum number of epochs to run training for")
+    parser.add_argument("-batch_size", required=False, default=2, type=int,
+                        help="The batch size")
     parser.add_argument("--val_folder", required=False, default="validation_raw",
                         help="name of the validation folder. No need to use this for most people")
     parser.add_argument("--disable_saving", required=False, action='store_true',
@@ -167,7 +169,7 @@ def main():
                             dataset_directory=dataset_directory, batch_dice=batch_dice, stage=stage,
                             unpack_data=decompress_data, deterministic=deterministic,
                             distribute_batch_size=args.dbs, num_gpus=num_gpus, fp16=not fp32,
-                            feature_space_dim=args.feature_space_dim, loss_type=args.loss_type, update_iter=args.update_iter, queue_size=args.queue_size, max_num_epochs=args.max_num_epochs)
+                            feature_space_dim=args.feature_space_dim, loss_type=args.loss_type, update_iter=args.update_iter, queue_size=args.queue_size, max_num_epochs=args.max_num_epochs, batch_size=args.batch_size)
 
     if args.disable_saving:
         trainer.save_latest_only = False  # if false it will not store/overwrite _latest but separate files each

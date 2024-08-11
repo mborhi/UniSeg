@@ -37,30 +37,29 @@ import wandb
 class UniSegExtractor_Trainer_Fast_DP(nnUNetTrainerV2_DP):
     def __init__(self, plans_file, fold, output_folder=None, dataset_directory=None, batch_dice=True, stage=None,
                  unpack_data=True, deterministic=True, num_gpus=2, distribute_batch_size=False, fp16=False, 
-                 feature_space_dim=32, loss_type="kl", update_iter=10, queue_size=5000, max_num_epochs=1000):
+                 feature_space_dim=32, loss_type="kl", update_iter=10, queue_size=5000, max_num_epochs=1000, batch_size=2):
         super().__init__(plans_file, fold, output_folder, dataset_directory, batch_dice, stage, unpack_data,
                          deterministic, num_gpus, distribute_batch_size, fp16)
-        self.max_num_epochs = 1
+        self.max_num_epochs = max_num_epochs
         # self.max_num_epochs = 1000
         # self.task = {"live":0, "kidn":1, "hepa":2, "panc":3, "colo":4, "lung":5, "sple":6, "sub-":7, "pros":8, "BraT":9, "PETC": 10}
-        self.task = {"live":0, "kidn":1, "hepa":2, "panc":3, "colo":4, "lung":5, "sple":6, "sub-":7, "pros":8, "BraT":9, "PETC": 10}
-        self.task_class = {0: 3, 1: 3, 2: 3, 3: 3, 4: 2, 5: 2, 6: 2, 7: 2, 8: 2, 9: 4, 10: 2}
-        self.task_id_class_lst_mapping = {
-            8: [0, 1], 
-        }
+        self.task = {"live":0, "kidn":1, "hepa":2, "panc":3, "colo":4, "lung":5, "sple":6, "sub-":7, "pros":8, "BraT":9}
+        self.task_class = {0: 3, 1: 3, 2: 3, 3: 3, 4: 2, 5: 2, 6: 2, 7: 2, 8: 2, 9: 4}
         # self.task_id_class_lst_mapping = {
-        #     0: [0, 1, 2], 
-        #     1: [0, 3, 4], 
-        #     2: [0, 5, 6], 
-        #     3: [0, 7, 8], 
-        #     4: [0, 9], 
-        #     5: [0, 10], 
-        #     6: [0, 11], 
-        #     7: [0, 12], 
-        #     8: [0, 13], 
-        #     9: [0, 14, 15, 16], 
-        #     10: [0, 17]
+        #     8: [0, 1], 
         # }
+        self.task_id_class_lst_mapping = {
+            0: [0, 1, 2], 
+            1: [0, 3, 4], 
+            2: [0, 5, 6], 
+            3: [0, 7, 8], 
+            4: [0, 9], 
+            5: [0, 10], 
+            6: [0, 11], 
+            7: [0, 12], 
+            8: [0, 13], 
+            9: [0, 14, 15, 16], 
+        }
         # self.task_id_class_lst_mapping = {
         #     0: [0, 1, 2], 
         #     1: [0, 3, 4], 
@@ -83,8 +82,9 @@ class UniSegExtractor_Trainer_Fast_DP(nnUNetTrainerV2_DP):
                 
         print("task_class", self.task_class)
         self.visual_epoch = -1
-        self.total_task_num = 11
-        self.num_batches_per_epoch = int((50 // 1) * self.total_task_num)
+        self.total_task_num = 10
+        self.batch_size = batch_size
+        self.num_batches_per_epoch = 1000 // (self.num_gpus * self.batch_size) # int((50 // (self.num_gpus * (self.batch_size // 2))) * self.total_task_num)
         print("num batches per epoch:", self.num_batches_per_epoch)
         print("total task num", self.total_task_num)
         print(os.getcwd())

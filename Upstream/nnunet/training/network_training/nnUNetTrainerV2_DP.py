@@ -51,7 +51,7 @@ class nnUNetTrainerV2_DP(nnUNetTrainerV2):
     def process_plans(self, plans):
         super(nnUNetTrainerV2_DP, self).process_plans(plans)
         if not self.distribute_batch_size:
-            self.batch_size = self.num_gpus * self.plans['plans_per_stage'][self.stage]['batch_size']
+            self.batch_size = self.num_gpus * self.batch_size #self.plans['plans_per_stage'][self.stage]['batch_size']
         else:
             if self.batch_size < self.num_gpus:
                 print("WARNING: self.batch_size < self.num_gpus. Will not be able to use the GPUs well")

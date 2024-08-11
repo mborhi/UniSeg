@@ -36,7 +36,7 @@ import wandb
 class UniSegExtractor_Trainer_DP(nnUNetTrainerV2_DP):
     def __init__(self, plans_file, fold, output_folder=None, dataset_directory=None, batch_dice=True, stage=None,
                  unpack_data=True, deterministic=True, num_gpus=2, distribute_batch_size=False, fp16=False, 
-                 feature_space_dim=32, loss_type="kl", update_iter=10, queue_size=5000, max_num_epochs=1000):
+                 feature_space_dim=32, loss_type="kl", update_iter=10, queue_size=5000, max_num_epochs=1000, batch_size=2):
         super().__init__(plans_file, fold, output_folder, dataset_directory, batch_dice, stage, unpack_data,
                          deterministic, num_gpus, distribute_batch_size, fp16)
         self.max_num_epochs = max_num_epochs
@@ -87,7 +87,8 @@ class UniSegExtractor_Trainer_DP(nnUNetTrainerV2_DP):
         print("task_class", self.task_class)
         self.visual_epoch = -1
         self.total_task_num = 10 # NOTE
-        self.num_batches_per_epoch = int((50 // num_gpus) * self.total_task_num)
+        self.batch_size = batch_size
+        self.num_batches_per_epoch = 1000 // (self.num_gpus * self.batch_size) #int((50 // num_gpus) * self.total_task_num)
         print("num batches per epoch:", self.num_batches_per_epoch)
         print("total task num", self.total_task_num)
         print(os.getcwd())
