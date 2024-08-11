@@ -727,7 +727,7 @@ class nnUNetTrainer(NetworkTrainer):
                                            zip(self.online_eval_tp, self.online_eval_fp, self.online_eval_fn)]
                                if not np.isnan(i)]
         self.all_val_eval_metrics.append(np.mean(global_dc_per_class))
-        wandb.log({"mean_global_dc_per_class": np.mean(global_dc_per_class)})
+        if wandb.run is not None: wandb.log({"mean_global_dc_per_class": np.mean(global_dc_per_class)})
         self.print_to_log_file(f"mean_global_dc_per_class: {np.mean(global_dc_per_class)}")
 
         self.print_to_log_file("Average global foreground Dice:", [np.round(i, 4) for i in global_dc_per_class])

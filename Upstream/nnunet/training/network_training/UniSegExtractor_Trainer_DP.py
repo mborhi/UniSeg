@@ -41,11 +41,13 @@ class UniSegExtractor_Trainer_DP(nnUNetTrainerV2_DP):
                          deterministic, num_gpus, distribute_batch_size, fp16)
         self.max_num_epochs = max_num_epochs
         # self.max_num_epochs = 1000
-        self.task = {"live":0, "kidn":1, "hepa":2, "panc":3, "colo":4, "lung":5, "sple":6, "sub-":7, "pros":8, "BraT":9, "PETC": 10}
+        # self.task = {"live":0, "kidn":1, "hepa":2, "panc":3, "colo":4, "lung":5, "sple":6, "sub-":7, "pros":8, "BraT":9, "PETC": 10}
+        self.task = {"live":0, "kidn":1, "hepa":2, "panc":3, "colo":4, "lung":5, "sple":6, "sub-":7, "pros":8, "BraT":9}
         # self.task = {"pros":0}
         # self.task_class = {0: 2}
         # self.task = {"live":0, "kidn":1, "hepa":2, "panc":3, "colo":4, "lung":5, "sple":6, "sub-":7, "pros":8, "BraT":9, "PETC": 10}
-        self.task_class = {0: 3, 1: 3, 2: 3, 3: 3, 4: 2, 5: 2, 6: 2, 7: 2, 8: 2, 9: 4, 10: 2}
+        # self.task_class = {0: 3, 1: 3, 2: 3, 3: 3, 4: 2, 5: 2, 6: 2, 7: 2, 8: 2, 9: 4, 10: 2}
+        self.task_class = {0: 3, 1: 3, 2: 3, 3: 3, 4: 2, 5: 2, 6: 2, 7: 2, 8: 2, 9: 4}
         # self.task_id_class_lst_mapping = {
         #     0: [0, 1], 
         # }
@@ -60,7 +62,7 @@ class UniSegExtractor_Trainer_DP(nnUNetTrainerV2_DP):
             7: [0, 12], 
             8: [0, 13], 
             9: [0, 14, 15, 16], 
-            10: [0, 17]
+            # 10: [0, 17]
         }
         # self.task_id_class_lst_mapping = {
         #     0: [0, 1, 2], 
@@ -84,7 +86,7 @@ class UniSegExtractor_Trainer_DP(nnUNetTrainerV2_DP):
                 
         print("task_class", self.task_class)
         self.visual_epoch = -1
-        self.total_task_num = 11 # NOTE
+        self.total_task_num = 10 # NOTE
         self.num_batches_per_epoch = int((50 // (num_gpus // 2)) * self.total_task_num)
         print("num batches per epoch:", self.num_batches_per_epoch)
         print("total task num", self.total_task_num)

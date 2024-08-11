@@ -467,7 +467,7 @@ class NetworkTrainer(object):
 
             self.all_tr_losses.append(np.mean(train_losses_epoch))
             self.print_to_log_file("train loss : %.4f" % self.all_tr_losses[-1])
-            wandb.log({"epoch_avg_loss": self.all_tr_losses[-1]})
+            if wandb.run is not None: wandb.log({"epoch_avg_loss": self.all_tr_losses[-1]})
             
             # NOTE Add GMM claculations here
             # NOTE this may be redundent all together
@@ -484,7 +484,7 @@ class NetworkTrainer(object):
                     val_losses.append(l)
                 self.all_val_losses.append(np.mean(val_losses))
                 self.print_to_log_file("validation loss: %.4f" % self.all_val_losses[-1])
-                wandb.log({"val_loss": self.all_val_losses[-1]})
+                if wandb.run is not None: wandb.log({"val_loss": self.all_val_losses[-1]})
 
                 if self.also_val_in_tr_mode:
                     self.network.train()
