@@ -87,7 +87,7 @@ class UniSegExtractor_Trainer_DP(nnUNetTrainerV2_DP):
         print("task_class", self.task_class)
         self.visual_epoch = -1
         self.total_task_num = 10 # NOTE
-        self.num_batches_per_epoch = int((50 // (num_gpus // 2)) * self.total_task_num)
+        self.num_batches_per_epoch = int((50 // num_gpus) * self.total_task_num)
         print("num batches per epoch:", self.num_batches_per_epoch)
         print("total task num", self.total_task_num)
         print(os.getcwd())
@@ -374,9 +374,15 @@ class UniSegExtractor_Trainer_DP(nnUNetTrainerV2_DP):
 
                 del data
                 self.print_to_log_file(f"task_id: {task_id}")
+
+                if self.loss_type == "kl":
+                    l =  self.loss(extractions, self.mus, self.sigs, tc_inds, return_est_dists=self.return_est_dists, with_sep_loss=update_target_dist)
+                else:
+                    l =  self.loss(output, self.mus, self.sigs, target[0], tc_inds, pred_dists=extractions, return_est_dists=self.return_est_dists, with_sep_loss=update_target_dist)
+
                 # l = self.loss(output, target)
                 # l = self.loss(extractions, mus, sigs, tc_inds)
-                l = self.loss(extractions, self.mus, self.sigs, tc_inds, return_est_dists=self.return_est_dists, with_sep_loss=update_target_dist)
+                # l = self.loss(extractions, self.mus, self.sigs, tc_inds, return_est_dists=self.return_est_dists, with_sep_loss=update_target_dist)
                 # l = self.loss.forward_gnlll(output, self.mus, self.sigs, target[0], tc_inds, pred_dists=extractions, return_est_dists=self.return_est_dists, with_sep_loss=update_target_dist)
                 # l = self.loss.gnlll(output, mus, sigs, target[0], tc_inds)
                 # l = self.loss.vec_gnlll(extractions, mus, sigs, tc_inds)

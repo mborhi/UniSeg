@@ -438,6 +438,7 @@ class NetworkTrainer(object):
         best_val_eval_metric = -1.
         while self.epoch < self.max_num_epochs:
             self.print_to_log_file("\nepoch: ", self.epoch)
+            if wandb.run is not None: wandb.log({"epoch": self.epoch})
             epoch_start_time = time()
             train_losses_epoch = []
 
