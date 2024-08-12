@@ -8,7 +8,7 @@ import numpy as np
 import itertools
 from nnunet.utilities.to_torch import maybe_to_torch, to_cuda
 from torch.cuda.amp import autocast
-from nnunet.training.network_training.nnUNetTrainerV2_DP import nnUNetTrainerV2_DDP
+from nnunet.training.network_training.nnUNetTrainerV2_DDP import nnUNetTrainerV2_DDP
 import torch
 import torch.distributed as dist
 from torch.optim import lr_scheduler
@@ -37,12 +37,12 @@ from nnunet.utilities.tensor_utilities import sum_tensor
 import copy 
 import wandb
 
-class UniSegExtractor_Trainer_DP(nnUNetTrainerV2_DDP):
-    def __init__(self, plans_file, fold, output_folder=None, dataset_directory=None, batch_dice=True, stage=None,
-                 unpack_data=True, deterministic=True, num_gpus=2, distribute_batch_size=False, fp16=False, 
-                 feature_space_dim=32, loss_type="kl", update_iter=10, queue_size=5000, max_num_epochs=1000, batch_size=2):
-        super().__init__(plans_file, fold, output_folder, dataset_directory, batch_dice, stage, unpack_data,
-                         deterministic, num_gpus, distribute_batch_size, fp16)
+class UniSegExtractor_Trainer_DDP(nnUNetTrainerV2_DDP):
+    def __init__(self, plans_file, fold, local_rank, output_folder=None, dataset_directory=None, batch_dice=True, stage=None,
+                 unpack_data=True, deterministic=True, distribute_batch_size=False, fp16=False, 
+                 feature_space_dim=32, loss_type="kl", update_iter=10, queue_size=5000, max_num_epochs=1000, batch_size=2, num_gpus=1):
+        super().__init__(plans_file, fold, local_rank, output_folder, dataset_directory, batch_dice, stage, unpack_data,
+                         deterministic, distribute_batch_size, fp16)
         self.max_num_epochs = max_num_epochs
         self.task = {"live":0, "kidn":1, "hepa":2, "panc":3, "colo":4, "lung":5, "sple":6, "sub-":7, "pros":8, "BraT":9}
         self.task_class = {0: 3, 1: 3, 2: 3, 3: 3, 4: 2, 5: 2, 6: 2, 7: 2, 8: 2, 9: 4}
@@ -69,14 +69,16 @@ class UniSegExtractor_Trainer_DP(nnUNetTrainerV2_DDP):
         self.visual_epoch = -1
         self.total_task_num = 10 # NOTE
         self.batch_size = batch_size
-        self.num_batches_per_epoch = 1000 // (self.num_gpus * self.batch_size) #int((50 // num_gpus) * self.total_task_num)
+        self.num_batches_per_epoch = 1000 // (num_gpus * self.batch_size) #int((50 // num_gpus) * self.total_task_num)
+        self.num_val_batches_per_epoch = self.num_batches_per_epoch // 5
         print("num batches per epoch:", self.num_batches_per_epoch)
+        print("num batches per val epoch:", self.num_val_batches_per_epoch)
         print("total task num", self.total_task_num)
         print(os.getcwd())
-        if os.path.exists(os.path.join(self.output_folder, "code")):
-            shutil.rmtree(os.path.join(self.output_folder, "code"))
-        dirname, _ = os.path.split(os.path.abspath(__file__))
-        shutil.copytree(os.path.join(dirname.split("nnunet")[0], "nnunet"), os.path.join(self.output_folder, "code"))
+        # if os.path.exists(os.path.join(self.output_folder, "code")):
+        #     shutil.rmtree(os.path.join(self.output_folder, "code"))
+        # dirname, _ = os.path.split(os.path.abspath(__file__))
+        # shutil.copytree(os.path.join(dirname.split("nnunet")[0], "nnunet"), os.path.join(self.output_folder, "code"))
         print("copy code successfully!")
         self.task_index = [0 for _ in range(self.total_task_num)]
         ### Distribution Matching
@@ -140,6 +142,18 @@ class UniSegExtractor_Trainer_DP(nnUNetTrainerV2_DDP):
                                           with_wandb=self.with_wandb,
                                         #   **uniseg_kwargs
                                         )
+        # pi = [55, 56, 57, 58, 110, 111, 112, 113, 114]
+        pi = [53, 54, 55, 56, 57, 58,]
+        for i, (p_name, p) in enumerate(self.network.named_parameters()):
+            if i in pi:
+                p.requires_grad = False
+                print(f"{i}: {p_name}")
+                self.print_to_log_file(f"{i}: {p_name}")
+            # elif i == 53 or i == 54:
+            #     print(f"{i}: {p_name}")
+
+        
+        # print(1 /0)
         self.network.inference_apply_nonlin = lambda x: x
         if torch.cuda.is_available():
             self.network.cuda()
@@ -152,6 +166,8 @@ class UniSegExtractor_Trainer_DP(nnUNetTrainerV2_DDP):
 
     def initialize_optimizer_and_scheduler(self):
         assert self.network is not None, "self.initialize_network must be called first"
+        # self.optimizer = torch.optim.Adam(self.network.parameters(), self.initial_lr, weight_decay=self.weight_decay,
+        #                                 amsgrad=True)
         self.optimizer = torch.optim.Adam(itertools.chain(self.network.parameters(), self.dynamic_dist_network.parameters()), self.initial_lr, weight_decay=self.weight_decay,
                                         amsgrad=True)
         self.lr_scheduler = lr_scheduler.ReduceLROnPlateau(self.optimizer, mode='min', factor=0.2,
@@ -270,7 +286,7 @@ class UniSegExtractor_Trainer_DP(nnUNetTrainerV2_DDP):
             self.initialize_optimizer_and_scheduler()
             self.network = DDP(self.network, device_ids=[self.local_rank])
 
-            assert isinstance(self.network, (SegmentationNetwork, nn.DataParallel))
+            # assert isinstance(self.network, (SegmentationNetwork, nn.DataParallel))
         else:
             self.print_to_log_file('self.was_initialized is True, not running self.initialize again')
 
@@ -314,7 +330,7 @@ class UniSegExtractor_Trainer_DP(nnUNetTrainerV2_DDP):
         if (self.epoch + 1) % self.update_target_iter == 0:
                 # self.network.set_update_target_dist(True)
                 update_target_dist = True
-
+        # update_target_dist = True
         if self.fp16:
             with autocast():
                 # output = self.network(data, task_id)
@@ -369,9 +385,9 @@ class UniSegExtractor_Trainer_DP(nnUNetTrainerV2_DDP):
                 self.print_to_log_file(f"task_id: {task_id}")
 
                 if self.loss_type == "kl":
-                    l =  self.loss(extractions, self.mus, self.sigs, tc_inds, return_est_dists=self.return_est_dists, with_sep_loss=update_target_dist)
+                    l =  self.loss(extractions, self.mus, self.sigs, tc_inds, return_est_dists=self.return_est_dists, with_sep_loss=False)
                 else:
-                    l =  self.loss(output, self.mus, self.sigs, target[0], tc_inds, pred_dists=extractions, return_est_dists=self.return_est_dists, with_sep_loss=update_target_dist)
+                    l =  self.loss(output, self.mus, self.sigs, target[0], tc_inds, pred_dists=extractions, return_est_dists=self.return_est_dists, with_sep_loss=False)
 
                 # l = self.loss(output, target)
                 # l = self.loss(extractions, mus, sigs, tc_inds)
@@ -383,8 +399,9 @@ class UniSegExtractor_Trainer_DP(nnUNetTrainerV2_DDP):
                 
                 
                 # Test the dice score:
+                l, est_dists = l
                 if self.return_est_dists:
-                    l, est_dists = l
+                    # l, est_dists = l
                     with torch.no_grad():
                         est_seg = self.network.module.segment_from_dists(output, est_dists, self.class_lst_to_std_mapping)
                         # NOTE change permute to be (0, num_classes_in_gt_seg, 1, ..., num_classes_in_gt_seg-1 )
@@ -403,6 +420,15 @@ class UniSegExtractor_Trainer_DP(nnUNetTrainerV2_DDP):
                             if self.with_wandb: wandb.log({"val_dc": -dc_score.item()})
                             self.print_to_log_file(f"val_dc {-dc_score.item()}")
                 
+                # Get sep loss
+                if update_target_dist:
+                    sep_loss = self.loss.get_sep_loss(self.mus)
+                    if self.with_wandb:
+                        wandb.log({"sep_loss": sep_loss})
+                    self.print_to_log_file(f"sep_loss: {sep_loss}")
+                    
+                    l = l + sep_loss
+
                 if self.with_wandb:
                     wandb.log({"loss": l.item()})
                 self.print_to_log_file(f"loss: {l.item()}")
@@ -436,10 +462,10 @@ class UniSegExtractor_Trainer_DP(nnUNetTrainerV2_DDP):
             est_seg = torch.nn.functional.one_hot(std_output_segmentation, self.num_classes)
             est_seg = torch.permute(est_seg, perm_dims)
             # wrap in lists
-            # self.run_online_evaluation([std_output_segmentation], target)
+            self.run_online_evaluation([est_seg], target)
             # tp, fp, fn, _ = get_tp_fp_fn_tn(std_output_segmentation, target[0])
-            tp_hard, fp_hard, fn_hard = self.get_hard_tp_fp_fn(est_seg, target[0])
-            self.run_online_evaluation(tp_hard, fp_hard, fn_hard)
+            # tp_hard, fp_hard, fn_hard = self.get_hard_tp_fp_fn(est_seg, target[0])
+            # self.run_online_evaluation(tp_hard, fp_hard, fn_hard)
 
         del target
 
@@ -474,8 +500,12 @@ class UniSegExtractor_Trainer_DP(nnUNetTrainerV2_DDP):
         """
         if debug=True then the temporary files generated for postprocessing determination will be kept
         """
-        ds = self.network.do_ds
-        self.network.do_ds = False
+        if isinstance(self.network, DDP):
+            net = self.network.module
+        else:
+            net = self.network
+        ds = net.do_ds
+        net.do_ds = False
 
         current_mode = self.network.training
         self.network.eval()
@@ -641,6 +671,39 @@ class UniSegExtractor_Trainer_DP(nnUNetTrainerV2_DDP):
         self.network.train(current_mode)
 
         self.network.do_ds = ds
+
+    def predict_preprocessed_data_return_seg_and_softmax(self, data: np.ndarray, task_id, do_mirroring: bool = True,
+                                                         mirror_axes= None,
+                                                         use_sliding_window: bool = True, step_size: float = 0.5,
+                                                         use_gaussian: bool = True, pad_border_mode: str = 'constant',
+                                                         pad_kwargs: dict = None, all_in_gpu: bool = False,
+                                                         verbose: bool = True, mixed_precision=True):
+        if pad_border_mode == 'constant' and pad_kwargs is None:
+            pad_kwargs = {'constant_values': 0}
+
+        if do_mirroring and mirror_axes is None:
+            mirror_axes = self.data_aug_params['mirror_axes']
+
+        if do_mirroring:
+            assert self.data_aug_params["do_mirror"], "Cannot do mirroring as test time augmentation when training " \
+                                                      "was done without mirroring"
+
+        valid = list((SegmentationNetwork, nn.DataParallel, DDP))
+        assert isinstance(self.network, tuple(valid))
+        if isinstance(self.network, DDP):
+            net = self.network.module
+        else:
+            net = self.network
+        ds = net.do_ds
+        net.do_ds = False
+        ret = net.predict_3D(data, task_id, do_mirroring=do_mirroring, mirror_axes=mirror_axes,
+                             use_sliding_window=use_sliding_window, step_size=step_size,
+                             patch_size=self.patch_size, regions_class_order=self.regions_class_order,
+                             use_gaussian=use_gaussian, pad_border_mode=pad_border_mode,
+                             pad_kwargs=pad_kwargs, all_in_gpu=all_in_gpu, verbose=verbose,
+                             mixed_precision=mixed_precision)
+        net.do_ds = ds
+        return ret
 
     def get_hard_tp_fp_fn(self, output, target):
         with torch.no_grad():

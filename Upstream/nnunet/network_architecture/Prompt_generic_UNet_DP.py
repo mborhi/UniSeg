@@ -38,15 +38,15 @@ class DynamicDistributionModel_DP(nn.Module):
             )
             for t in range(num_components)
         ])
-        self.task_sigma_modules = nn.ModuleList([
-            nn.Sequential(
-                nn.Linear((feature_space_dim * num_components) + (1 * num_components) + tp_dim + 1, hidden_dim), 
-                nn.ReLU(), 
-                nn.Linear(hidden_dim, 1),
-                nn.ReLU()
-            )
-            for t in range(num_components)
-        ])
+        # self.task_sigma_modules = nn.ModuleList([
+        #     nn.Sequential(
+        #         nn.Linear((feature_space_dim * num_components) + (1 * num_components) + tp_dim + 1, hidden_dim), 
+        #         nn.ReLU(), 
+        #         nn.Linear(hidden_dim, 1),
+        #         nn.ReLU()
+        #     )
+        #     for t in range(num_components)
+        # ])
 
         conv_kwargs = {'kernel_size': 3, 'stride': 1, 'padding': 1, 'dilation': 1, 'bias': True}
         dropout_op_kwargs = {'p': 0.5, 'inplace': True}
@@ -432,9 +432,9 @@ class UniSeg_model(Generic_UNet):
                                   self.nonlin, self.nonlin_kwargs, basic_block=basic_block)
             ))
 
-        for ds in range(len(self.conv_blocks_localization)):
-            self.seg_outputs.append(nn.Conv3d(self.conv_blocks_localization[ds][-1].output_channels, num_classes,
-                                            1, 1, 0, 1, 1, seg_output_use_bias))
+        # for ds in range(len(self.conv_blocks_localization)):
+        #     self.seg_outputs.append(nn.Conv3d(self.conv_blocks_localization[ds][-1].output_channels, num_classes,
+        #                                     1, 1, 0, 1, 1, seg_output_use_bias))
             # self.seg_outputs.append(conv_op(self.conv_blocks_localization[ds][-1].output_channels, num_classes,
             #                                 1, 1, 0, 1, 1, seg_output_use_bias))
 
@@ -455,7 +455,7 @@ class UniSeg_model(Generic_UNet):
         self.conv_blocks_context = nn.ModuleList(self.conv_blocks_context)
         self.td = nn.ModuleList(self.td)
         self.tu = nn.ModuleList(self.tu)
-        self.seg_outputs = nn.ModuleList(self.seg_outputs)
+        # self.seg_outputs = nn.ModuleList(self.seg_outputs)
         if self.upscale_logits:
             self.upscale_logits_ops = nn.ModuleList(
                 self.upscale_logits_ops)  # lambda x:x is not a Module so we need to distinguish here
@@ -469,8 +469,8 @@ class UniSeg_model(Generic_UNet):
             "identity": nn.Identity()
         })
         
-        feature_space_dim = 128
-        self.channel_reduction = nn.Conv3d(num_classes, feature_space_dim, 1, 1, 0, 1, 1, seg_output_use_bias)
+        # feature_space_dim = 128
+        # self.channel_reduction = nn.Conv3d(num_classes, feature_space_dim, 1, 1, 0, 1, 1, seg_output_use_bias)
         self.final_tanh = nn.Tanh()
 
 

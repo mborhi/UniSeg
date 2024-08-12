@@ -18,6 +18,7 @@ from collections import OrderedDict
 from multiprocessing import Pool
 from time import sleep, time
 from typing import Tuple
+import wandb
 
 import numpy as np
 import torch
@@ -354,8 +355,11 @@ class nnUNetTrainerV2_DDP(nnUNetTrainerV2):
         if not self.was_initialized:
             self.initialize(True)
 
+        best_val_eval_metric = 0
+
         while self.epoch < self.max_num_epochs:
             self.print_to_log_file("\nepoch: ", self.epoch)
+            self.print_to_log_file("\nnum batches per epoch:", self.num_batches_per_epoch)
             epoch_start_time = time()
             train_losses_epoch = []
 
@@ -371,18 +375,18 @@ class nnUNetTrainerV2_DDP(nnUNetTrainerV2):
 
                         tbar.set_postfix(loss=l)
                         train_losses_epoch.append(l)
-                        break # NOTE
+                        # break # NOTE
             else:
                 for _ in range(self.num_batches_per_epoch):
+                    print("iteration", _)
                     l = self.run_iteration(self.tr_gen, True)
                     train_losses_epoch.append(l)
-                    break # NOTE
+                    # if _ == 10: break # NOTE
 
             self.all_tr_losses.append(np.mean(train_losses_epoch))
             self.print_to_log_file("train loss : %.4f" % self.all_tr_losses[-1])
-            # NOTE Add GMM claculations here
-            self.network.init_gmms()
-            self.network.train_gmms()
+            if wandb.run is not None: wandb.log({"epoch_avg_loss": self.all_tr_losses[-1]})
+
 
             with torch.no_grad():
                 # validation with train=False
@@ -391,6 +395,7 @@ class nnUNetTrainerV2_DDP(nnUNetTrainerV2):
                 for b in range(self.num_val_batches_per_epoch):
                     l = self.run_iteration(self.val_gen, False, True)
                     val_losses.append(l)
+                    # if b == 10: break
                 self.all_val_losses.append(np.mean(val_losses))
                 self.print_to_log_file("validation loss: %.4f" % self.all_val_losses[-1])
 
@@ -407,6 +412,19 @@ class nnUNetTrainerV2_DDP(nnUNetTrainerV2):
             self.update_train_loss_MA()  # needed for lr scheduler and stopping of training
 
             continue_training = self.on_epoch_end()
+
+            if self.all_val_eval_metrics[-1] > best_val_eval_metric:
+                self.dynamic_dist_network.set_best_feature_space_qs()
+
+                best_val_eval_metric = self.all_val_eval_metrics[-1]
+
+
+            if self.epoch + 1 == self.max_num_epochs:
+                self.dynamic_dist_network.use_best_feature_space_qs()
+
+            else:# self.epoch + 1 < self.max_num_epochs:
+                # clear queues
+                self.dynamic_dist_network.clear_queues()
 
             epoch_end_time = time()
 
