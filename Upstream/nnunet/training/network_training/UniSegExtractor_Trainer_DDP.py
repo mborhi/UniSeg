@@ -5,18 +5,19 @@
 # @file: UniSeg with nnunet version
 # @time: 2022/11/29
 import numpy as np
-import itertools 
-import torch.optim.lr_scheduler as lr_scheduler
+import itertools
 from nnunet.utilities.to_torch import maybe_to_torch, to_cuda
 from torch.cuda.amp import autocast
-from nnunet.training.network_training.nnUNetTrainerV2_DP import nnUNetTrainerV2_DP
+from nnunet.training.network_training.nnUNetTrainerV2_DP import nnUNetTrainerV2_DDP
 import torch
+import torch.distributed as dist
+from torch.optim import lr_scheduler
 from nnunet.network_architecture.initialization import InitWeights_He
 from nnunet.utilities.nd_softmax import softmax_helper
-from torch import nn
+from torch import nn, distributed
 import SimpleITK as sitk
 import shutil
-from nnunet.network_architecture.Prompt_generic_UNet_Fast_DP import UniSegExtractor_Fast_DP, DynamicDistributionModel_Fast_DP
+from nnunet.network_architecture.Prompt_generic_UNet_DP import UniSeg_model, UniSegExtractor_DP, DynamicDistributionModel_DP
 from nnunet.training.dataloading.dataset_loading import DataLoader3D_UniSeg
 from batchgenerators.utilities.file_and_folder_operations import *
 from multiprocessing import Pool
@@ -30,26 +31,21 @@ from nnunet.network_architecture.neural_network import SegmentationNetwork
 from nnunet.training.dataloading.dataset_loading import unpack_dataset
 from nnunet.training.loss_functions.dist_match_loss import DynamicDistMatchingLoss
 from nnunet.training.loss_functions.dice_loss import DC_and_CE_loss, SoftDiceLoss, get_tp_fp_fn_tn
-from torch.nn.parallel.data_parallel import DataParallel
+from torch.nn.parallel import DistributedDataParallel as DDP
 # from nnunet.utilities.sep import get_task_set, extract_task_set
-
+from nnunet.utilities.tensor_utilities import sum_tensor
 import copy 
 import wandb
 
-class UniSegExtractor_Trainer_Fast_DP(nnUNetTrainerV2_DP):
+class UniSegExtractor_Trainer_DP(nnUNetTrainerV2_DDP):
     def __init__(self, plans_file, fold, output_folder=None, dataset_directory=None, batch_dice=True, stage=None,
                  unpack_data=True, deterministic=True, num_gpus=2, distribute_batch_size=False, fp16=False, 
                  feature_space_dim=32, loss_type="kl", update_iter=10, queue_size=5000, max_num_epochs=1000, batch_size=2):
         super().__init__(plans_file, fold, output_folder, dataset_directory, batch_dice, stage, unpack_data,
                          deterministic, num_gpus, distribute_batch_size, fp16)
         self.max_num_epochs = max_num_epochs
-        # self.max_num_epochs = 1000
-        # self.task = {"live":0, "kidn":1, "hepa":2, "panc":3, "colo":4, "lung":5, "sple":6, "sub-":7, "pros":8, "BraT":9, "PETC": 10}
         self.task = {"live":0, "kidn":1, "hepa":2, "panc":3, "colo":4, "lung":5, "sple":6, "sub-":7, "pros":8, "BraT":9}
         self.task_class = {0: 3, 1: 3, 2: 3, 3: 3, 4: 2, 5: 2, 6: 2, 7: 2, 8: 2, 9: 4}
-        # self.task_id_class_lst_mapping = {
-        #     8: [0, 1], 
-        # }
         self.task_id_class_lst_mapping = {
             0: [0, 1, 2], 
             1: [0, 3, 4], 
@@ -62,19 +58,6 @@ class UniSegExtractor_Trainer_Fast_DP(nnUNetTrainerV2_DP):
             8: [0, 13], 
             9: [0, 14, 15, 16], 
         }
-        # self.task_id_class_lst_mapping = {
-        #     0: [0, 1, 2], 
-        #     1: [0, 3, 4], 
-        #     2: [0, 5, 6], 
-        #     3: [0, 7, 8], 
-        #     4: [0, 9], 
-        #     5: [0, 10], 
-        #     6: [0, 11], 
-        #     # 7: [0, 12], 
-        #     8: [0, 12], 
-        #     9: [0, 13, 14, 15, 16], 
-        #     10: [0, 17]
-        # }
         self.class_lst_task_id_mapping = {}
         self.class_lst_to_std_mapping = {}
         for task_id, cls_lst in self.task_id_class_lst_mapping.items():
@@ -84,9 +67,9 @@ class UniSegExtractor_Trainer_Fast_DP(nnUNetTrainerV2_DP):
                 
         print("task_class", self.task_class)
         self.visual_epoch = -1
-        self.total_task_num = 10
+        self.total_task_num = 10 # NOTE
         self.batch_size = batch_size
-        self.num_batches_per_epoch = 1000 // (self.num_gpus * self.batch_size) # int((50 // (self.num_gpus * (self.batch_size // 2))) * self.total_task_num)
+        self.num_batches_per_epoch = 1000 // (self.num_gpus * self.batch_size) #int((50 // num_gpus) * self.total_task_num)
         print("num batches per epoch:", self.num_batches_per_epoch)
         print("total task num", self.total_task_num)
         print(os.getcwd())
@@ -100,9 +83,9 @@ class UniSegExtractor_Trainer_Fast_DP(nnUNetTrainerV2_DP):
         self.update_target_iter = update_iter
         self.feature_space_dim = feature_space_dim
         self.queue_size = queue_size
-        self.loss_type = loss_type
         self.num_components = len(self.class_lst_to_std_mapping.keys())
         self.return_est_dists = True
+        self.loss_type = loss_type
 
     def initialize_network(self):
         """
@@ -149,31 +132,23 @@ class UniSegExtractor_Trainer_Fast_DP(nnUNetTrainerV2_DP):
 
         # self.network.inference_apply_nonlin = softmax_helper
         # num_components = len(self.class_lst_to_std_mapping.keys())
-        self.network = UniSegExtractor_Fast_DP(self.base_num_features, 
+        self.network = UniSegExtractor_DP(self.base_num_features, 
                                           self.num_components,  
                                           self.class_lst_to_std_mapping, 
                                           self.task_id_class_lst_mapping,
                                           *uniseg_args, 
-                                          loss=self.loss,
                                           with_wandb=self.with_wandb,
                                         #   **uniseg_kwargs
                                         )
+        self.network.inference_apply_nonlin = lambda x: x
         if torch.cuda.is_available():
             self.network.cuda()
-        self.network.inference_apply_nonlin = lambda x: x
 
         self.tp_dim = int(self.network.intermediate_prompt.numel() / self.network.num_class)
         # Isn't actually DP, onyl used for further DP modules
-        self.dynamic_dist_network = DynamicDistributionModel_Fast_DP(self.feature_space_dim, 
-                                                                self.tp_dim, 
-                                                                self.num_components, 
-                                                                reduction='sum',
-                                                                momentum=0.999, 
-                                                                queue_size=self.queue_size
-                                                                )
+        self.dynamic_dist_network = DynamicDistributionModel_DP(self.feature_space_dim, self.tp_dim, self.num_components, momentum=0.999, queue_size=self.queue_size)
         if torch.cuda.is_available():
             self.dynamic_dist_network.cuda()
-        self.dynamic_dist_network = DataParallel(self.dynamic_dist_network, tuple(range(self.num_gpus)), )
 
     def initialize_optimizer_and_scheduler(self):
         assert self.network is not None, "self.initialize_network must be called first"
@@ -220,7 +195,7 @@ class UniSegExtractor_Trainer_Fast_DP(nnUNetTrainerV2_DP):
             # now wrap the loss
             # self.loss = MultipleOutputLoss2(self.loss, self.ds_loss_weights)
             # self.loss = MultipleOutputLoss2(self.loss, self.ds_loss_weights)
-            # self.dc_loss = SoftDiceLoss(batch_dice=True, smooth=1e-5, do_bg=True, apply_nonlin=None, do_one_hot=False)
+            self.dc_loss = SoftDiceLoss(batch_dice=True, smooth=1e-5, do_bg=True, apply_nonlin=None, do_one_hot=False)
             
             ################# END ###################
 
@@ -229,9 +204,11 @@ class UniSegExtractor_Trainer_Fast_DP(nnUNetTrainerV2_DP):
             if training:
                 self.dl_tr, self.dl_val = self.get_basic_generators()
                 if self.unpack_data:
-                    print("unpacking dataset")
-                    unpack_dataset(self.folder_with_preprocessed_data)
-                    print("done")
+                    if self.local_rank == 0:
+                        print("unpacking dataset")
+                        unpack_dataset(self.folder_with_preprocessed_data)
+                        print("done")
+                    distributed.barrier()
                 else:
                     print(
                         "INFO: Not unpacking data! Training may be slow due to that. Pray you are not using 2d or you "
@@ -284,16 +261,14 @@ class UniSegExtractor_Trainer_Fast_DP(nnUNetTrainerV2_DP):
                 
 
             ##### END ####
-            self.with_wandb = wandb.run is not None
-            self.loss = DynamicDistMatchingLoss(self.min_dist, loss_type=self.loss_type, with_wandb=self.with_wandb) # NOTE
+            if wandb.run is not None:
+                self.with_wandb = True 
+            else:
+                self.with_wandb = False
             self.initialize_network()
+            self.loss = DynamicDistMatchingLoss(self.min_dist, loss_type=self.loss_type, with_wandb=self.with_wandb) # NOTE
             self.initialize_optimizer_and_scheduler()
-
-            ### INITIALIZE QUEUES ###
-            self.feature_space_qs = [[] for _ in range(self.num_components)]
-            self.best_feature_space_qs = None
-            self.update_size = 100
-            ### END ###
+            self.network = DDP(self.network, device_ids=[self.local_rank])
 
             assert isinstance(self.network, (SegmentationNetwork, nn.DataParallel))
         else:
@@ -327,7 +302,6 @@ class UniSegExtractor_Trainer_Fast_DP(nnUNetTrainerV2_DP):
         target = maybe_to_torch(target)
         task_id = maybe_to_torch(task_id).long()
 
-        self.print_to_log_file(f"task_id: {task_id}")
 
         if torch.cuda.is_available():
             data = to_cuda(data)
@@ -340,35 +314,17 @@ class UniSegExtractor_Trainer_Fast_DP(nnUNetTrainerV2_DP):
         if (self.epoch + 1) % self.update_target_iter == 0:
                 # self.network.set_update_target_dist(True)
                 update_target_dist = True
-            
-        if run_online_evaluation:
-            # train GMMs
-            if not self.network.module.gmm_fitted:
-                # self.network.module.init_gmms(self.mus, self.sigs)
-                self.network.module.train_gmms(self.feature_space_qs, self.mus, self.sigs)
 
         if self.fp16:
             with autocast():
                 # output = self.network(data, task_id)
-                # tc_inds = copy.deepcopy(self.task_id_class_lst_mapping[int(task_id[0])])
+                tc_inds = copy.deepcopy(self.task_id_class_lst_mapping[int(task_id[0])])
                 target_classes = target[0].unique().detach().cpu().numpy()
-                input_mus, input_sigs = self.mus[None, ].repeat(data.size(0), 1, 1), self.sigs[None, :].repeat(data.size(0), 1, 1, 1)
-                l, repr_elements, tc_inds = self.network(data,
-                                                        task_id, 
-                                                        mus=input_mus, 
-                                                        sigs=input_sigs, 
-                                                        gt_seg=target[0], 
-                                                        target_classes=target_classes, 
-                                                        return_dc_score=True,
-                                                        update_target_dist=update_target_dist, 
-                                                        for_backprop=True
-                                                        )
+                output = self.network(data, task_id=task_id, gt_seg=target[0], target_classes=target_classes, update_target_dist=update_target_dist, for_loss=True)
 
-                # reduce tc_inds back to ints
-                tc_inds = [ind[0].item() for ind in tc_inds]
-                # if do_backprop:
-                l, dc_score = l
-                dc_score = torch.mean(dc_score)
+                # extract tasks per gpu (should be big speed up)
+                output, extractions = output
+                # output, feature_extractions = output
                 
                 # NOTE sanity check output
                 # output = torch.zeros_like(target[0], dtype=torch.float, device=data.device).repeat(1, self.feature_space_dim, 1, 1, 1)
@@ -383,41 +339,77 @@ class UniSegExtractor_Trainer_Fast_DP(nnUNetTrainerV2_DP):
                 # for i, tc_ind in enumerate(tc_inds):
                 #     output[target[0] == i] = mus[tc_ind]
 
+                # tc_inds = [self.task_id_class_lst_mapping[int(task_id[0])][int(c)] for c in target_classes]
+                tc_inds = []
+                i, j = 0, 0
+                while i < len(extractions) and j < len(target_classes):
+                    # re-arrange dimensions for loss
+                    extractions[i] = extractions[i].permute(1, 0)
+                    if extractions[i].size(-1) < 2:
+                        _ = extractions.pop(i)
+                    else:
+                        c = target_classes[j]
+                        tc_inds.append(self.task_id_class_lst_mapping[int(task_id[0])][int(c)])
+                        i += 1
+                    j += 1
+
+                # assert len(output) > 1
+                # for out in range(len(output)):
+                #     output[out] = output[out][:, :self.task_class[int(task_id[0])]]
+
                 # output, mus, sigs = output
                 # if self.network.get_update_target_dist():
                 if update_target_dist:
-                    l, flat_tp_feats = l
-                    dynamic_dist_input_sigs = torch.tensor([[0.001] * self.num_components])[None, :].repeat(data.size(0), 1, 1)
-                    dynamic_dist_input_mus = self.mus[None, :].repeat(data.size(0), 1, 1)
-                    updated_mus = self.dynamic_dist_network(flat_tp_feats, dynamic_dist_input_mus, dynamic_dist_input_sigs, tc_inds) 
-                    self.mus = torch.sum(updated_mus, 0) / int(data.size(0)) # averaged along batch
+                    output, flat_tp_feats = output
+                    input_sigs = torch.tensor([[0.001] * self.num_components])
+                    self.mus, _ = self.dynamic_dist_network(flat_tp_feats, self.mus, input_sigs, tc_inds)
+                    # self.mus, self.sigs = self.dynamic_dist_network(flat_tp_feats, self.mus, self.sigs, tc_inds)
 
-                
-                if not run_online_evaluation: del data
-                
-                l = torch.mean(l)
-                # self.print_to_log_file(f"Dice Score: {-dc_score.item()}")
-                if do_backprop:
-                    if self.with_wandb: wandb.log({"train_dc": -dc_score.item()})
-                    self.print_to_log_file(f"train_dc {-dc_score.item()}")
+                del data
+                self.print_to_log_file(f"task_id: {task_id}")
+
+                if self.loss_type == "kl":
+                    l =  self.loss(extractions, self.mus, self.sigs, tc_inds, return_est_dists=self.return_est_dists, with_sep_loss=update_target_dist)
                 else:
-                    if self.with_wandb: wandb.log({"val_dc": -dc_score.item()})
-                    self.print_to_log_file(f"val_dc {-dc_score.item()}")
+                    l =  self.loss(output, self.mus, self.sigs, target[0], tc_inds, pred_dists=extractions, return_est_dists=self.return_est_dists, with_sep_loss=update_target_dist)
+
+                # l = self.loss(output, target)
+                # l = self.loss(extractions, mus, sigs, tc_inds)
+                # l = self.loss(extractions, self.mus, self.sigs, tc_inds, return_est_dists=self.return_est_dists, with_sep_loss=update_target_dist)
+                # l = self.loss.forward_gnlll(output, self.mus, self.sigs, target[0], tc_inds, pred_dists=extractions, return_est_dists=self.return_est_dists, with_sep_loss=update_target_dist)
+                # l = self.loss.gnlll(output, mus, sigs, target[0], tc_inds)
+                # l = self.loss.vec_gnlll(extractions, mus, sigs, tc_inds)
+                # print(f"gnll: {l.item()}")
+                
+                
+                # Test the dice score:
+                if self.return_est_dists:
+                    l, est_dists = l
+                    with torch.no_grad():
+                        est_seg = self.network.module.segment_from_dists(output, est_dists, self.class_lst_to_std_mapping)
+                        # NOTE change permute to be (0, num_classes_in_gt_seg, 1, ..., num_classes_in_gt_seg-1 )
+                        perm_dims = tuple([0, len(output.shape)-1] + list(range(1, len(output.shape)-1)))
+                        # est_seg = torch.nn.functional.one_hot(est_seg, self.task_class[int(task_id[0])]).permute(0, 4, 1, 2, 3)
+                        # self.print_to_log_file(f"num classes in gt; {num_classes_in_gt}, {est_seg.unique()}")
+                        est_seg = torch.nn.functional.one_hot(est_seg, self.num_classes)
+                        est_seg = torch.permute(est_seg, perm_dims)
+                        # dc_score = self.dc_loss(est_seg.unsqueeze(1), target[0])
+                        dc_score = self.dc_loss(est_seg, target[0])
+                        # self.print_to_log_file(f"Dice Score: {-dc_score.item()}")
+                        if do_backprop:
+                            if self.with_wandb: wandb.log({"train_dc": -dc_score.item()})
+                            self.print_to_log_file(f"train_dc {-dc_score.item()}")
+                        else:
+                            if self.with_wandb: wandb.log({"val_dc": -dc_score.item()})
+                            self.print_to_log_file(f"val_dc {-dc_score.item()}")
                 
                 if self.with_wandb:
                     wandb.log({"loss": l.item()})
                 self.print_to_log_file(f"loss: {l.item()}")
-
+                # TODO make method of network; features = network output
                 # Updated Queues
-                # self.dynamic_dist_network.module.update_queues(repr_elements, tc_inds)
-                if do_backprop:
-                    for i, task_id in enumerate(tc_inds):
-                        # Enqueue and Dequeue
-                        if len(self.feature_space_qs[task_id]) + self.update_size > self.queue_size:
-                            for i in range(len(self.feature_space_qs[task_id]) + self.update_size - self.queue_size):
-                                self.feature_space_qs[task_id].pop(0)
-                        
-                        self.feature_space_qs[task_id].append(repr_elements[i].reshape(-1, self.feature_space_dim))
+                # pick random element from extraction 
+                self.dynamic_dist_network.update_queues(extractions, tc_inds)
 
             if do_backprop:
                 # self.amp_grad_scaler.scale(l).backward(retain_graph=True) # NOTE
@@ -432,9 +424,21 @@ class UniSegExtractor_Trainer_Fast_DP(nnUNetTrainerV2_DP):
         if run_online_evaluation:
             # train GMMs
             if not self.network.module.gmm_fitted:
-                self.network.module.train_gmms(self.feature_space_qs, self.mus, self.sigs)
-
-            tp_hard, fp_hard, fn_hard = self.network.module.seg_and_eval(data, task_id, gt_seg=target[0], **{})
+                # self.network.module.init_gmms(self.mus, self.sigs)
+                self.network.module.train_gmms(self.dynamic_dist_network.feature_space_qs, self.mus, self.sigs)
+            # self.network.construct_torch_gmm()
+            # segment output
+            output_segmentation = self.network.module.segment(output)
+            std_output_segmentation = self.network.module.standardize_segmentation(output_segmentation, copy.copy(self.class_lst_to_std_mapping))
+            # est_seg = torch.nn.functional.one_hot(std_output_segmentation, num_classes_in_gt).permute(0, 4, 1, 2, 3)
+            perm_dims = tuple([0, len(output.shape)-1] + list(range(1, len(output.shape)-1)))
+            # est_seg = torch.nn.functional.one_hot(std_output_segmentation, num_classes_in_gt)
+            est_seg = torch.nn.functional.one_hot(std_output_segmentation, self.num_classes)
+            est_seg = torch.permute(est_seg, perm_dims)
+            # wrap in lists
+            # self.run_online_evaluation([std_output_segmentation], target)
+            # tp, fp, fn, _ = get_tp_fp_fn_tn(std_output_segmentation, target[0])
+            tp_hard, fp_hard, fn_hard = self.get_hard_tp_fp_fn(est_seg, target[0])
             self.run_online_evaluation(tp_hard, fp_hard, fn_hard)
 
         del target
@@ -475,8 +479,6 @@ class UniSegExtractor_Trainer_Fast_DP(nnUNetTrainerV2_DP):
 
         current_mode = self.network.training
         self.network.eval()
-
-        # initialize and assign gmms
 
         assert self.was_initialized, "must initialize, ideally with checkpoint (or train first)"
         if self.dataset_val is None:
@@ -640,5 +642,25 @@ class UniSegExtractor_Trainer_Fast_DP(nnUNetTrainerV2_DP):
 
         self.network.do_ds = ds
 
-    
+    def get_hard_tp_fp_fn(self, output, target):
+        with torch.no_grad():
+            num_classes = output.shape[1]
+            # output_softmax = softmax_helper(output)
+            output_softmax = output
+            output_seg = output_softmax.argmax(1)
+            target = target[:, 0]
+            axes = tuple(range(1, len(target.shape)))
+            tp_hard = torch.zeros((target.shape[0], num_classes - 1)).to(output_seg.device.index)
+            fp_hard = torch.zeros((target.shape[0], num_classes - 1)).to(output_seg.device.index)
+            fn_hard = torch.zeros((target.shape[0], num_classes - 1)).to(output_seg.device.index)
+            for c in range(1, num_classes):
+                tp_hard[:, c - 1] = sum_tensor((output_seg == c).float() * (target == c).float(), axes=axes)
+                fp_hard[:, c - 1] = sum_tensor((output_seg == c).float() * (target != c).float(), axes=axes)
+                fn_hard[:, c - 1] = sum_tensor((output_seg != c).float() * (target == c).float(), axes=axes)
+
+            tp_hard = tp_hard.sum(0, keepdim=False)[None]
+            fp_hard = fp_hard.sum(0, keepdim=False)[None]
+            fn_hard = fn_hard.sum(0, keepdim=False)[None]
+
+            return tp_hard, fp_hard, fn_hard
 

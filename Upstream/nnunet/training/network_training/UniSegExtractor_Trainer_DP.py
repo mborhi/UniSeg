@@ -5,10 +5,12 @@
 # @file: UniSeg with nnunet version
 # @time: 2022/11/29
 import numpy as np
+import itertools
 from nnunet.utilities.to_torch import maybe_to_torch, to_cuda
 from torch.cuda.amp import autocast
 from nnunet.training.network_training.nnUNetTrainerV2_DP import nnUNetTrainerV2_DP
 import torch
+from torch.optim import lr_scheduler
 from nnunet.network_architecture.initialization import InitWeights_He
 from nnunet.utilities.nd_softmax import softmax_helper
 from torch import nn
@@ -168,6 +170,15 @@ class UniSegExtractor_Trainer_DP(nnUNetTrainerV2_DP):
         self.dynamic_dist_network = DynamicDistributionModel_DP(self.feature_space_dim, self.tp_dim, self.num_components, momentum=0.999, queue_size=self.queue_size)
         if torch.cuda.is_available():
             self.dynamic_dist_network.cuda()
+
+    def initialize_optimizer_and_scheduler(self):
+        assert self.network is not None, "self.initialize_network must be called first"
+        self.optimizer = torch.optim.Adam(itertools.chain(self.network.parameters(), self.dynamic_dist_network.parameters()), self.initial_lr, weight_decay=self.weight_decay,
+                                        amsgrad=True)
+        self.lr_scheduler = lr_scheduler.ReduceLROnPlateau(self.optimizer, mode='min', factor=0.2,
+                                                        patience=self.lr_scheduler_patience,
+                                                        verbose=True, threshold=self.lr_scheduler_eps,
+                                                        threshold_mode="abs")
 
     def initialize(self, training=True, force_load_plans=False):
         """
