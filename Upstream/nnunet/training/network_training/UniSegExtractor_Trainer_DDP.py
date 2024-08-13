@@ -40,7 +40,7 @@ import wandb
 class UniSegExtractor_Trainer_DDP(nnUNetTrainerV2_DDP):
     def __init__(self, plans_file, fold, local_rank, output_folder=None, dataset_directory=None, batch_dice=True, stage=None,
                  unpack_data=True, deterministic=True, distribute_batch_size=False, fp16=False, 
-                 feature_space_dim=32, loss_type="kl", update_iter=10, queue_size=5000, max_num_epochs=1000, batch_size=2, num_gpus=1):
+                 feature_space_dim=32, loss_type="kl", update_iter=1, queue_size=5000, max_num_epochs=1000, batch_size=2, num_gpus=1):
         super().__init__(plans_file, fold, local_rank, output_folder, dataset_directory, batch_dice, stage, unpack_data,
                          deterministic, distribute_batch_size, fp16)
         self.max_num_epochs = max_num_epochs
@@ -86,7 +86,7 @@ class UniSegExtractor_Trainer_DDP(nnUNetTrainerV2_DDP):
         self.feature_space_dim = feature_space_dim
         self.queue_size = queue_size
         self.num_components = len(self.class_lst_to_std_mapping.keys())
-        self.return_est_dists = True
+        self.return_est_dists = False
         self.loss_type = loss_type
 
     def initialize_network(self):
@@ -320,9 +320,9 @@ class UniSegExtractor_Trainer_DDP(nnUNetTrainerV2_DDP):
 
 
         if torch.cuda.is_available():
-            data = to_cuda(data)
-            target = to_cuda(target)
-            task_id = to_cuda(task_id)
+            task_id = to_cuda(task_id, gpu_id=None)
+            data = to_cuda(data, gpu_id=None)
+            target = to_cuda(target, gpu_id=None)
 
         update_target_dist = False
 
@@ -331,6 +331,7 @@ class UniSegExtractor_Trainer_DDP(nnUNetTrainerV2_DDP):
                 # self.network.set_update_target_dist(True)
                 update_target_dist = True
         # update_target_dist = True
+        self.print_to_log_file("epoch, update", self.epoch, update_target_dist)
         if self.fp16:
             with autocast():
                 # output = self.network(data, task_id)
@@ -388,37 +389,30 @@ class UniSegExtractor_Trainer_DDP(nnUNetTrainerV2_DDP):
                     l =  self.loss(extractions, self.mus, self.sigs, tc_inds, return_est_dists=self.return_est_dists, with_sep_loss=False)
                 else:
                     l =  self.loss(output, self.mus, self.sigs, target[0], tc_inds, pred_dists=extractions, return_est_dists=self.return_est_dists, with_sep_loss=False)
-
-                # l = self.loss(output, target)
-                # l = self.loss(extractions, mus, sigs, tc_inds)
-                # l = self.loss(extractions, self.mus, self.sigs, tc_inds, return_est_dists=self.return_est_dists, with_sep_loss=update_target_dist)
-                # l = self.loss.forward_gnlll(output, self.mus, self.sigs, target[0], tc_inds, pred_dists=extractions, return_est_dists=self.return_est_dists, with_sep_loss=update_target_dist)
-                # l = self.loss.gnlll(output, mus, sigs, target[0], tc_inds)
-                # l = self.loss.vec_gnlll(extractions, mus, sigs, tc_inds)
-                # print(f"gnll: {l.item()}")
                 
                 
                 # Test the dice score:
-                l, est_dists = l
-                if self.return_est_dists:
-                    # l, est_dists = l
-                    with torch.no_grad():
-                        est_seg = self.network.module.segment_from_dists(output, est_dists, self.class_lst_to_std_mapping)
-                        # NOTE change permute to be (0, num_classes_in_gt_seg, 1, ..., num_classes_in_gt_seg-1 )
-                        perm_dims = tuple([0, len(output.shape)-1] + list(range(1, len(output.shape)-1)))
-                        # est_seg = torch.nn.functional.one_hot(est_seg, self.task_class[int(task_id[0])]).permute(0, 4, 1, 2, 3)
-                        # self.print_to_log_file(f"num classes in gt; {num_classes_in_gt}, {est_seg.unique()}")
-                        est_seg = torch.nn.functional.one_hot(est_seg, self.num_classes)
-                        est_seg = torch.permute(est_seg, perm_dims)
-                        # dc_score = self.dc_loss(est_seg.unsqueeze(1), target[0])
-                        dc_score = self.dc_loss(est_seg, target[0])
-                        # self.print_to_log_file(f"Dice Score: {-dc_score.item()}")
-                        if do_backprop:
-                            if self.with_wandb: wandb.log({"train_dc": -dc_score.item()})
-                            self.print_to_log_file(f"train_dc {-dc_score.item()}")
-                        else:
-                            if self.with_wandb: wandb.log({"val_dc": -dc_score.item()})
-                            self.print_to_log_file(f"val_dc {-dc_score.item()}")
+                if self.return_est_dists: # False
+                    l, est_dists = l
+                # if self.return_est_dists:
+                #     # l, est_dists = l
+                #     with torch.no_grad():
+                #         est_seg = self.network.module.segment_from_dists(output, est_dists, self.class_lst_to_std_mapping)
+                #         # NOTE change permute to be (0, num_classes_in_gt_seg, 1, ..., num_classes_in_gt_seg-1 )
+                #         perm_dims = tuple([0, len(output.shape)-1] + list(range(1, len(output.shape)-1)))
+                #         # est_seg = torch.nn.functional.one_hot(est_seg, self.task_class[int(task_id[0])]).permute(0, 4, 1, 2, 3)
+                #         # self.print_to_log_file(f"num classes in gt; {num_classes_in_gt}, {est_seg.unique()}")
+                #         est_seg = torch.nn.functional.one_hot(est_seg, self.num_classes)
+                #         est_seg = torch.permute(est_seg, perm_dims)
+                #         # dc_score = self.dc_loss(est_seg.unsqueeze(1), target[0])
+                #         dc_score = self.dc_loss(est_seg, target[0])
+                #         # self.print_to_log_file(f"Dice Score: {-dc_score.item()}")
+                #         if do_backprop:
+                #             if self.with_wandb: wandb.log({"train_dc": -dc_score.item()})
+                #             self.print_to_log_file(f"train_dc {-dc_score.item()}")
+                #         else:
+                #             if self.with_wandb: wandb.log({"val_dc": -dc_score.item()})
+                #             self.print_to_log_file(f"val_dc {-dc_score.item()}")
                 
                 # Get sep loss
                 if update_target_dist:
