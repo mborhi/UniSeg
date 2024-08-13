@@ -359,6 +359,7 @@ class nnUNetTrainerV2_DDP(nnUNetTrainerV2):
 
         while self.epoch < self.max_num_epochs:
             self.print_to_log_file("\nepoch: ", self.epoch)
+            if wandb.run is not None: wandb.log({"epoch": self.epoch})
             self.print_to_log_file("\nnum batches per epoch:", self.num_batches_per_epoch)
             epoch_start_time = time()
             train_losses_epoch = []
