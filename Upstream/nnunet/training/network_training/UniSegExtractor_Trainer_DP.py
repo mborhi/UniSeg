@@ -489,8 +489,7 @@ class UniSegExtractor_Trainer_DP(nnUNetTrainerV2_DP):
     def validate(self, do_mirroring: bool = True, use_sliding_window: bool = True, step_size: float = 0.5,
                  save_softmax: bool = True, use_gaussian: bool = True, overwrite: bool = True,
                  validation_folder_name: str = 'validation_raw', debug: bool = False, all_in_gpu: bool = False,
-                 segmentation_export_kwargs: dict = None, run_postprocessing_on_folds: bool = True, 
-                 refill_queues=False):
+                 segmentation_export_kwargs: dict = None, run_postprocessing_on_folds: bool = True):
         """
         if debug=True then the temporary files generated for postprocessing determination will be kept
         """
@@ -505,8 +504,8 @@ class UniSegExtractor_Trainer_DP(nnUNetTrainerV2_DP):
             self.load_dataset()
             self.do_split()
 
-        if refill_queues:
-            self.refill_queue_and_train_gmm()
+        # if refill_queues:
+        self.refill_queue_and_train_gmm()
 
         if segmentation_export_kwargs is None:
             if 'segmentation_export_params' in self.plans.keys():

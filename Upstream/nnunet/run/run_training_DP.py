@@ -222,7 +222,7 @@ def main():
         # predict validation
         trainer.validate(save_softmax=args.npz, validation_folder_name=val_folder,
                          run_postprocessing_on_folds=not disable_postprocessing_on_folds, 
-                         refill_queues=args.refill_queues)
+                         )
 
         if network == '3d_lowres':
             print("predicting segmentations for the next stage of the cascade")
