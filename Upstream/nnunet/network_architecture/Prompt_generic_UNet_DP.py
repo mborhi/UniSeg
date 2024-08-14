@@ -432,11 +432,11 @@ class UniSeg_model(Generic_UNet):
                                   self.nonlin, self.nonlin_kwargs, basic_block=basic_block)
             ))
 
-        # for ds in range(len(self.conv_blocks_localization)):
-        #     self.seg_outputs.append(nn.Conv3d(self.conv_blocks_localization[ds][-1].output_channels, num_classes,
-        #                                     1, 1, 0, 1, 1, seg_output_use_bias))
-            # self.seg_outputs.append(conv_op(self.conv_blocks_localization[ds][-1].output_channels, num_classes,
-            #                                 1, 1, 0, 1, 1, seg_output_use_bias))
+        for ds in range(len(self.conv_blocks_localization)):
+            self.seg_outputs.append(nn.Conv3d(self.conv_blocks_localization[ds][-1].output_channels, num_classes,
+                                            1, 1, 0, 1, 1, seg_output_use_bias))
+            self.seg_outputs.append(conv_op(self.conv_blocks_localization[ds][-1].output_channels, num_classes,
+                                            1, 1, 0, 1, 1, seg_output_use_bias))
 
         self.upscale_logits_ops = []
         cum_upsample = np.cumprod(np.vstack(pool_op_kernel_sizes), axis=0)[::-1]
@@ -455,7 +455,7 @@ class UniSeg_model(Generic_UNet):
         self.conv_blocks_context = nn.ModuleList(self.conv_blocks_context)
         self.td = nn.ModuleList(self.td)
         self.tu = nn.ModuleList(self.tu)
-        # self.seg_outputs = nn.ModuleList(self.seg_outputs)
+        self.seg_outputs = nn.ModuleList(self.seg_outputs)
         if self.upscale_logits:
             self.upscale_logits_ops = nn.ModuleList(
                 self.upscale_logits_ops)  # lambda x:x is not a Module so we need to distinguish here
