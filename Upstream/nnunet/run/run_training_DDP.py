@@ -51,6 +51,8 @@ def main():
     parser.add_argument("--local_rank", default=0, type=int)
     parser.add_argument("--fp32", required=False, default=False, action="store_true",
                         help="disable mixed precision training and run old school fp32")
+    parser.add_argument("--single_task", required=False, default=False, action="store_true",
+                        help="disable mixed precision training and run old school fp32")
     parser.add_argument("-feature_space_dim", required=False, default=32, type=int,
                         help="feature space dimension of model")
     parser.add_argument("-loss_type", required=False, default="kl", type=str,
@@ -178,7 +180,8 @@ def main():
                             queue_size=args.queue_size, 
                             max_num_epochs=args.max_num_epochs, 
                             batch_size=args.batch_size, 
-                            num_gpus=args.num_gpus)
+                            num_gpus=args.num_gpus, 
+                            single_task=args.single_task)
 
     if args.disable_saving:
         trainer.save_latest_only = False  # if false it will not store/overwrite _latest but separate files each

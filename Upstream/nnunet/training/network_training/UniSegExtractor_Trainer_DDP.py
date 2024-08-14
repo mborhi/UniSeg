@@ -40,7 +40,8 @@ import wandb
 class UniSegExtractor_Trainer_DDP(nnUNetTrainerV2_DDP):
     def __init__(self, plans_file, fold, local_rank, output_folder=None, dataset_directory=None, batch_dice=True, stage=None,
                  unpack_data=True, deterministic=True, distribute_batch_size=False, fp16=False, 
-                 feature_space_dim=32, loss_type="kl", update_iter=1, queue_size=5000, max_num_epochs=1000, batch_size=2, num_gpus=1):
+                 feature_space_dim=32, loss_type="kl", update_iter=1, queue_size=5000, max_num_epochs=1000, 
+                 batch_size=2, num_gpus=1, single_task=False):
         super().__init__(plans_file, fold, local_rank, output_folder, dataset_directory, batch_dice, stage, unpack_data,
                          deterministic, distribute_batch_size, fp16)
         self.max_num_epochs = max_num_epochs
@@ -58,6 +59,10 @@ class UniSegExtractor_Trainer_DDP(nnUNetTrainerV2_DDP):
             8: [0, 13], 
             9: [0, 14, 15, 16], 
         }
+        if single_task:
+            self.task = { "pros":0, }
+            self.task_class = {0: 2}
+            self.task_id_class_lst_mapping = {0: [0, 1]}
         self.class_lst_task_id_mapping = {}
         self.class_lst_to_std_mapping = {}
         for task_id, cls_lst in self.task_id_class_lst_mapping.items():
@@ -67,7 +72,7 @@ class UniSegExtractor_Trainer_DDP(nnUNetTrainerV2_DDP):
                 
         print("task_class", self.task_class)
         self.visual_epoch = -1
-        self.total_task_num = 10 # NOTE
+        self.total_task_num = 10 if not single_task else 1 # NOTE
         self.batch_size = batch_size
         self.num_batches_per_epoch = 1000 // (num_gpus * self.batch_size) #int((50 // num_gpus) * self.total_task_num)
         self.num_val_batches_per_epoch = self.num_batches_per_epoch // 5
