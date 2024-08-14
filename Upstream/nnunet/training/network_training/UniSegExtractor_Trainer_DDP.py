@@ -510,6 +510,7 @@ class UniSegExtractor_Trainer_DDP(nnUNetTrainerV2_DDP):
         self.network.eval()
 
         assert self.was_initialized, "must initialize, ideally with checkpoint (or train first)"
+        self.refill_queue_and_train_gmm()
         if self.dataset_val is None:
             self.load_dataset()
             self.do_split()
@@ -726,3 +727,26 @@ class UniSegExtractor_Trainer_DDP(nnUNetTrainerV2_DDP):
 
             return tp_hard, fp_hard, fn_hard
 
+    def refill_queue_and_train_gmm(self):
+        dl_tr, dl_val = self.get_basic_generators()
+        print("unpacking dataset")
+        unpack_dataset(self.folder_with_preprocessed_data)
+        print("done")
+        tr_gen, _ = get_moreDA_augmentation_uniseg(
+            dl_tr, dl_val,
+            self.data_aug_params[
+                'patch_size_for_spatialtransform'],
+            self.data_aug_params,
+            deep_supervision_scales=self.deep_supervision_scales,
+            pin_memory=self.pin_memory,
+            use_nondetMultiThreadedAugmenter=False,
+            task_num=self.total_task_num, iter_each_task_epoch=int(self.num_batches_per_epoch // self.total_task_num)
+                )
+        
+        self.update_iter = 999
+        self.epoch = 0
+        for b in range(self.num_batches_per_epoch // 2):
+            self.run_iteration(tr_gen, False, False)
+
+        if not self.network.gmm_fitted:
+                self.network.train_gmms(self.feature_space_qs, self.mus, self.sigs)
