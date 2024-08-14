@@ -483,6 +483,8 @@ class UniSegExtractor_Trainer_Fast_DP(nnUNetTrainerV2_DP):
             self.load_dataset()
             self.do_split()
 
+        self.refill_queue_and_train_gmm()
+
         if segmentation_export_kwargs is None:
             if 'segmentation_export_params' in self.plans.keys():
                 force_separate_z = self.plans['segmentation_export_params']['force_separate_z']
@@ -642,3 +644,11 @@ class UniSegExtractor_Trainer_Fast_DP(nnUNetTrainerV2_DP):
 
     
 
+    def refill_queue_and_train_gmm(self):
+        self.update_iter = 999
+        self.epoch = 0
+        for b in range(self.num_batches_per_epoch):
+            self.run_iteration(self.tr_gen, False, False)
+
+        if not self.network.module.gmm_fitted:
+                self.network.module.train_gmms(self.feature_space_qs, self.mus, self.sigs)
