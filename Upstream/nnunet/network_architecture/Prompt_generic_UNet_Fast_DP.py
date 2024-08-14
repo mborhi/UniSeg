@@ -197,8 +197,8 @@ class UniSegExtractor_Fast_DP(UniSeg_model):
         # Collect params and construct pytorch dist
         # est_means = torch.from_numpy(np.vstack([self.gaussian_mixtures[t].means_ for t in trained_indices]))
         # est_covs = torch.from_numpy(np.vstack([self.gaussian_mixtures[t].covariances_ for t in trained_indices]))
-        # est_weights = torch.from_numpy(np.vstack([self.gaussian_mixtures[t].weights_ for t in trained_indices]))
-        # lower_bounds = np.vstack([self.gaussian_mixtures[t].lower_bound_ for t in trained_indices])
+        est_weights = torch.from_numpy(np.vstack([self.gaussian_mixtures[t].weights_ for t in trained_indices]))
+        lower_bounds = np.vstack([self.gaussian_mixtures[t].lower_bound_ for t in trained_indices])
 
         component_distributions = []
         for t in trained_indices:
