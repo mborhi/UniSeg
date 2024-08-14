@@ -645,10 +645,25 @@ class UniSegExtractor_Trainer_Fast_DP(nnUNetTrainerV2_DP):
     
 
     def refill_queue_and_train_gmm(self):
+        tr_gen, val_gen = get_moreDA_augmentation_uniseg(
+                    self.dl_tr, self.dl_val,
+                    self.data_aug_params[
+                        'patch_size_for_spatialtransform'],
+                    self.data_aug_params,
+                    deep_supervision_scales=self.deep_supervision_scales,
+                    pin_memory=self.pin_memory,
+                    use_nondetMultiThreadedAugmenter=False,
+                    task_num=self.total_task_num, iter_each_task_epoch=int(self.num_batches_per_epoch // self.total_task_num)
+                )
+        self.print_to_log_file("TRAINING KEYS:\n %s" % (str(self.dataset_tr.keys())),
+                                also_print_to_console=False)
+        self.print_to_log_file("VALIDATION KEYS:\n %s" % (str(self.dataset_val.keys())),
+                                       also_print_to_console=False)
+        
         self.update_iter = 999
         self.epoch = 0
         for b in range(self.num_batches_per_epoch):
-            self.run_iteration(self.tr_gen, False, False)
+            self.run_iteration(tr_gen, False, False)
 
         if not self.network.module.gmm_fitted:
                 self.network.module.train_gmms(self.feature_space_qs, self.mus, self.sigs)
