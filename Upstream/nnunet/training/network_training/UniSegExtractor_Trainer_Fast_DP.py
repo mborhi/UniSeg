@@ -665,5 +665,5 @@ class UniSegExtractor_Trainer_Fast_DP(nnUNetTrainerV2_DP):
         for b in range(self.num_batches_per_epoch):
             self.run_iteration(tr_gen, False, False)
 
-        if not self.network.module.gmm_fitted:
-                self.network.module.train_gmms(self.feature_space_qs, self.mus, self.sigs)
+        if not self.network.gmm_fitted:
+                self.network.train_gmms(self.feature_space_qs, self.mus, self.sigs)
