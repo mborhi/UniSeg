@@ -645,7 +645,20 @@ class UniSegExtractor_Trainer_Fast_DP(nnUNetTrainerV2_DP):
     
 
     def refill_queue_and_train_gmm(self):
-        tr_gen, val_gen = self.get_basic_generators()
+        dl_tr, dl_val = self.get_basic_generators()
+        print("unpacking dataset")
+        unpack_dataset(self.folder_with_preprocessed_data)
+        print("done")
+        tr_gen, _ = get_moreDA_augmentation_uniseg(
+            dl_tr, dl_val,
+            self.data_aug_params[
+                'patch_size_for_spatialtransform'],
+            self.data_aug_params,
+            deep_supervision_scales=self.deep_supervision_scales,
+            pin_memory=self.pin_memory,
+            use_nondetMultiThreadedAugmenter=False,
+            task_num=self.total_task_num, iter_each_task_epoch=int(self.num_batches_per_epoch // self.total_task_num)
+                )
         
         self.update_iter = 999
         self.epoch = 0
