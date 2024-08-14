@@ -64,6 +64,8 @@ def main():
                                                                                           "you are developing nnUNet "
                                                                                           "you should enable this")
     parser.add_argument("--valbest", required=False, default=False, action="store_true", help="")
+    parser.add_argument("--refill_queues", required=False, default=False, action="store_true",
+                        help="to refill queue for validation with dry run on train dataset")
     parser.add_argument("--find_lr", required=False, default=False, action="store_true", help="")
     parser.add_argument("--fp32", required=False, default=False, action="store_true",
                         help="disable mixed precision training and run old school fp32")
@@ -219,7 +221,8 @@ def main():
 
         # predict validation
         trainer.validate(save_softmax=args.npz, validation_folder_name=val_folder,
-                         run_postprocessing_on_folds=not disable_postprocessing_on_folds)
+                         run_postprocessing_on_folds=not disable_postprocessing_on_folds, 
+                         refill_queues=args.refill_queues)
 
         if network == '3d_lowres':
             print("predicting segmentations for the next stage of the cascade")

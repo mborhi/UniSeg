@@ -489,7 +489,8 @@ class UniSegExtractor_Trainer_DP(nnUNetTrainerV2_DP):
     def validate(self, do_mirroring: bool = True, use_sliding_window: bool = True, step_size: float = 0.5,
                  save_softmax: bool = True, use_gaussian: bool = True, overwrite: bool = True,
                  validation_folder_name: str = 'validation_raw', debug: bool = False, all_in_gpu: bool = False,
-                 segmentation_export_kwargs: dict = None, run_postprocessing_on_folds: bool = True):
+                 segmentation_export_kwargs: dict = None, run_postprocessing_on_folds: bool = True, 
+                 refill_queues=False):
         """
         if debug=True then the temporary files generated for postprocessing determination will be kept
         """
@@ -503,6 +504,9 @@ class UniSegExtractor_Trainer_DP(nnUNetTrainerV2_DP):
         if self.dataset_val is None:
             self.load_dataset()
             self.do_split()
+
+        if refill_queues:
+            self.refill_queue_and_train_gmm()
 
         if segmentation_export_kwargs is None:
             if 'segmentation_export_params' in self.plans.keys():
@@ -682,4 +686,18 @@ class UniSegExtractor_Trainer_DP(nnUNetTrainerV2_DP):
             fn_hard = fn_hard.sum(0, keepdim=False)[None]
 
             return tp_hard, fp_hard, fn_hard
+        
+    def refill_queue_and_train_gmm(self):
+        self.update_iter = 999
+        self.epoch = 0
+        for b in range(self.num_batches_per_epoch):
+            self.run_iteration(self.tr_gen, False, False)
+
+        if not self.network.module.gmm_fitted:
+            # self.network.module.init_gmms(self.mus, self.sigs)
+            self.network.module.train_gmms(self.dynamic_dist_network.feature_space_qs, self.mus, self.sigs)
+
+        
+
+
 
