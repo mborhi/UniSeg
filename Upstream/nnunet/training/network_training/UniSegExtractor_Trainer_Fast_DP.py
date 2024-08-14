@@ -410,14 +410,14 @@ class UniSegExtractor_Trainer_Fast_DP(nnUNetTrainerV2_DP):
 
                 # Updated Queues
                 # self.dynamic_dist_network.module.update_queues(repr_elements, tc_inds)
-                if do_backprop:
-                    for i, task_id in enumerate(tc_inds):
-                        # Enqueue and Dequeue
-                        if len(self.feature_space_qs[task_id]) + self.update_size > self.queue_size:
-                            for i in range(len(self.feature_space_qs[task_id]) + self.update_size - self.queue_size):
-                                self.feature_space_qs[task_id].pop(0)
-                        
-                        self.feature_space_qs[task_id].append(repr_elements[i].reshape(-1, self.feature_space_dim))
+                # if do_backprop: # NOTE
+                for i, task_id in enumerate(tc_inds):
+                    # Enqueue and Dequeue
+                    if len(self.feature_space_qs[task_id]) + self.update_size > self.queue_size:
+                        for i in range(len(self.feature_space_qs[task_id]) + self.update_size - self.queue_size):
+                            self.feature_space_qs[task_id].pop(0)
+                    
+                    self.feature_space_qs[task_id].append(repr_elements[i].reshape(-1, self.feature_space_dim))
 
             if do_backprop:
                 # self.amp_grad_scaler.scale(l).backward(retain_graph=True) # NOTE
@@ -662,7 +662,7 @@ class UniSegExtractor_Trainer_Fast_DP(nnUNetTrainerV2_DP):
         
         self.update_iter = 999
         self.epoch = 0
-        for b in range(self.num_batches_per_epoch):
+        for b in range(self.num_batches_per_epoch // 2):
             self.run_iteration(tr_gen, False, False)
 
         if not self.network.gmm_fitted:
