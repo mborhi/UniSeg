@@ -435,8 +435,8 @@ class UniSeg_model(Generic_UNet):
         for ds in range(len(self.conv_blocks_localization)):
             self.seg_outputs.append(nn.Conv3d(self.conv_blocks_localization[ds][-1].output_channels, num_classes,
                                             1, 1, 0, 1, 1, seg_output_use_bias))
-            self.seg_outputs.append(conv_op(self.conv_blocks_localization[ds][-1].output_channels, num_classes,
-                                            1, 1, 0, 1, 1, seg_output_use_bias))
+            # self.seg_outputs.append(conv_op(self.conv_blocks_localization[ds][-1].output_channels, num_classes,
+            #                                 1, 1, 0, 1, 1, seg_output_use_bias))
 
         self.upscale_logits_ops = []
         cum_upsample = np.cumprod(np.vstack(pool_op_kernel_sizes), axis=0)[::-1]
@@ -469,8 +469,8 @@ class UniSeg_model(Generic_UNet):
             "identity": nn.Identity()
         })
         
-        # feature_space_dim = 128
-        # self.channel_reduction = nn.Conv3d(num_classes, feature_space_dim, 1, 1, 0, 1, 1, seg_output_use_bias)
+        feature_space_dim = 128
+        self.channel_reduction = nn.Conv3d(num_classes, feature_space_dim, 1, 1, 0, 1, 1, seg_output_use_bias)
         self.final_tanh = nn.Tanh()
 
 
