@@ -281,7 +281,18 @@ class NetworkTrainer(object):
             'lr_scheduler_state_dict': lr_sched_state_dct,
             'plot_stuff': (self.all_tr_losses, self.all_val_losses, self.all_val_losses_tr_mode,
                            self.all_val_eval_metrics),
-            'best_stuff' : (self.best_epoch_based_on_MA_tr_loss, self.best_MA_tr_loss_for_patience, self.best_val_eval_criterion_MA)}
+            'best_stuff' : (self.best_epoch_based_on_MA_tr_loss, self.best_MA_tr_loss_for_patience, self.best_val_eval_criterion_MA)
+        }
+        if isinstance(self.network, DataParallel):
+            for c in range(self.num_components):
+                save_this[f'Q{c}'] = self.network.module.feature_space_qs[c]
+        else :
+            for c in range(self.num_components):
+                save_this[f'Q{c}'] = self.dynamic_dist_network.feature_space_qs[c]
+
+        save_this["target_mus"] = self.mus 
+        save_this["target_sigs"] = self.sigs
+        
         if self.amp_grad_scaler is not None:
             save_this['amp_grad_scaler'] = self.amp_grad_scaler.state_dict()
 
@@ -384,6 +395,14 @@ class NetworkTrainer(object):
         if 'best_stuff' in checkpoint.keys():
             self.best_epoch_based_on_MA_tr_loss, self.best_MA_tr_loss_for_patience, self.best_val_eval_criterion_MA = checkpoint[
                 'best_stuff']
+
+        # load targets and Qs
+        self.mus, self.sigs = checkpoint['target_mus'], checkpoint['target_sigs']
+        if isinstance(self.network, DataParallel):
+            pass 
+        else:
+            for c in range(self.num_components):
+                self.dynamic_dist_network.feature_space_qs[c] = checkpoint[f'Q{c}']
 
         # after the training is done, the epoch is incremented one more time in my old code. This results in
         # self.epoch = 1001 for old trained models when the epoch is actually 1000. This causes issues because
@@ -521,19 +540,19 @@ class NetworkTrainer(object):
                 else:
                     self.network.use_best_feature_space_qs()
 
-            else:# self.epoch + 1 < self.max_num_epochs:
-                if isinstance(self.dynamic_dist_network, DataParallel):
-                    self.feature_space_qs = [[] for _ in range(self.num_components)]
-                elif isinstance(self.network, DataParallel):
-                    # set gmm learned to false
-                    self.network.module.gmm_fitted = False
-                    # clear queues
-                    self.dynamic_dist_network.clear_queues()
-                else:
-                    # set gmm learned to false
-                    self.network.gmm_fitted = False
-                    # clear queues
-                    self.network.clear_queues()
+            # else:# self.epoch + 1 < self.max_num_epochs:
+            #     if isinstance(self.dynamic_dist_network, DataParallel):
+            #         self.feature_space_qs = [[] for _ in range(self.num_components)]
+            #     elif isinstance(self.network, DataParallel):
+            #         # set gmm learned to false
+            #         self.network.module.gmm_fitted = False
+            #         # clear queues
+            #         self.dynamic_dist_network.clear_queues()
+            #     else:
+            #         # set gmm learned to false
+            #         self.network.gmm_fitted = False
+            #         # clear queues
+            #         self.network.clear_queues()
 
 
             epoch_end_time = time()

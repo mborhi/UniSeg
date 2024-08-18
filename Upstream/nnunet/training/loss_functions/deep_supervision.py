@@ -41,3 +41,36 @@ class MultipleOutputLoss2(nn.Module):
             if weights[i] != 0:
                 l += weights[i] * self.loss(x[i], y[i])
         return l
+
+class MixedDSLoss(nn.Module):
+    def __init__(self, main_loss, ds_loss, weight_factors=None):
+        """
+        use this if you have several outputs and ground truth (both list of same len) and the loss should be computed
+        between them (x[0] and y[0], x[1] and y[1] etc)
+        :param loss:
+        :param weight_factors:
+        """
+        super(MixedDSLoss, self).__init__()
+        self.weight_factors = weight_factors
+        self.main_loss = main_loss
+        self.ds_loss = ds_loss
+
+    def forward(self, outputs, targets, *args, **kwargs):
+        assert isinstance(outputs, (tuple, list)), "x must be either tuple or list"
+        assert isinstance(targets, (tuple, list)), "y must be either tuple or list"
+        #if self.loss_type == "kl":
+            # l =  self.loss(extractions, self.mus, self.sigs, tc_inds, return_est_dists=self.return_est_dists, with_sep_loss=False)
+        # else:
+        #     l =  self.loss(output, self.mus, self.sigs, target[0], tc_inds, pred_dists=extractions, return_est_dists=self.return_est_dists, with_sep_loss=False)
+                
+        depth = len(outputs)
+        if self.weight_factors is None:
+            weights = [1] * len(depth)
+        else:
+            weights = self.weight_factors
+
+        l = weights[0] * self.main_loss(*args, **kwargs)
+        for i in range(1, depth):
+            if weights[i] != 0:
+                l += weights[i] * self.ds_loss(outputs[i], targets[i])
+        return l

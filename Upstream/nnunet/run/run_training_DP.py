@@ -184,7 +184,6 @@ def main():
             project=args.wandb_project_name,
             config={
                 "exp_name": exp_name,
-                "debug": False,
                 "network": network, 
                 "feature_space_dim": 32, 
                 "task": "Prostate"
