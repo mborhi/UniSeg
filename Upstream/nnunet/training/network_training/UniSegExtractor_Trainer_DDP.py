@@ -88,7 +88,7 @@ class UniSegExtractor_Trainer_DDP(nnUNetTrainerV2_DDP):
         self.visual_epoch = -1
         self.total_task_num = 9 if not single_task else 1 # NOTE
         self.batch_size = batch_size
-        self.num_batches_per_epoch = 15 // (num_gpus * self.batch_size) #int((50 // num_gpus) * self.total_task_num)
+        self.num_batches_per_epoch = 1000 // (num_gpus * self.batch_size) #int((50 // num_gpus) * self.total_task_num)
         self.num_val_batches_per_epoch = self.num_batches_per_epoch // 5
         print("num batches per epoch:", self.num_batches_per_epoch)
         print("num batches per val epoch:", self.num_val_batches_per_epoch)
@@ -105,7 +105,7 @@ class UniSegExtractor_Trainer_DDP(nnUNetTrainerV2_DDP):
         self.feature_space_dim = feature_space_dim
         self.queue_size = queue_size
         self.num_components = len(self.class_lst_to_std_mapping.keys())
-        self.return_est_dists = False
+        self.return_est_dists = True
         self.loss_type = loss_type
 
     def initialize_network(self):
@@ -402,6 +402,10 @@ class UniSegExtractor_Trainer_DDP(nnUNetTrainerV2_DDP):
                         j += 1
                     lst_tc_inds.append(tc_inds)
 
+                # Updated Queues using the final feature space outputs
+                # pick random element from extraction 
+                self.dynamic_dist_network.update_queues(lst_extractions[0], lst_tc_inds[0])
+
                 # output, mus, sigs = output
                 # if self.network.get_update_target_dist():
                 if update_target_dist:
@@ -433,10 +437,10 @@ class UniSegExtractor_Trainer_DDP(nnUNetTrainerV2_DDP):
                             self.network.module.train_gmms(self.dynamic_dist_network.feature_space_qs, self.mus, self.sigs)
                         # self.network.construct_torch_gmm()
                         # segment output
-                        output_segmentation = self.network.module.segment(output)
+                        output_segmentation = self.network.module.segment(output[0])
                         std_output_segmentation = self.network.module.standardize_segmentation(output_segmentation, copy.copy(self.class_lst_to_std_mapping))
-                        perm_dims = tuple([0, len(output.shape)-1] + list(range(1, len(output.shape)-1)))
-                        est_seg = torch.nn.functional.one_hot(est_seg, self.num_classes)
+                        perm_dims = tuple([0, len(output[0].shape)-1] + list(range(1, len(output[0].shape)-1)))
+                        est_seg = torch.nn.functional.one_hot(std_output_segmentation, self.num_classes)
                         est_seg = torch.permute(est_seg, perm_dims)
                         # dc_score = self.dc_loss(est_seg.unsqueeze(1), target[0])
                         dc_score = self.dc_loss(est_seg, target[0])
@@ -460,10 +464,6 @@ class UniSegExtractor_Trainer_DDP(nnUNetTrainerV2_DDP):
                 if self.with_wandb:
                     wandb.log({"loss": l.item()})
                 self.print_to_log_file(f"loss: {l.item()}")
-                # TODO make method of network; features = network output
-                # Updated Queues using the final feature space outputs
-                # pick random element from extraction 
-                self.dynamic_dist_network.update_queues(lst_extractions[0], lst_tc_inds[0])
 
             if do_backprop:
                 # self.amp_grad_scaler.scale(l).backward(retain_graph=True) # NOTE

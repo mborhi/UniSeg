@@ -69,8 +69,13 @@ class MixedDSLoss(nn.Module):
         else:
             weights = self.weight_factors
 
-        l = weights[0] * self.main_loss(*args, **kwargs)
+        main_l = self.main_loss(*args, **kwargs)
+        if "return_est_dists" in kwargs and kwargs["return_est_dists"]:
+            main_l, est_dists = main_l
+        l = weights[0] * main_l
         for i in range(1, depth):
             if weights[i] != 0:
                 l += weights[i] * self.ds_loss(outputs[i], targets[i])
+        if "return_est_dists" in kwargs and kwargs["return_est_dists"]:
+            return l, est_dists
         return l
