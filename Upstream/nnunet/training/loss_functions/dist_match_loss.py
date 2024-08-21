@@ -20,15 +20,64 @@ class DynamicDistMatchingLoss(nn.Module):
 
         self.with_wandb = with_wandb
 
+    def forward_multi_var_gnlll(self, pred_dists, means, covs, indices, handle_nan=False, return_est_dists=False, with_sep_loss=True):
+        if return_est_dists: est_dists = []
+        total_gnlll = 0
+        # for i, pred_dist_samples in enumerate(pred_dists):
+        for i, task_label in enumerate(indices):
+            pred_dist_samples = pred_dists[i].to(dtype=torch.float64)
+            
+            num_nan = pred_dist_samples.isnan().count_nonzero().item()
+            assert num_nan == 0, f"NaN values [{num_nan}] in predicted distribution."
+            
+            l = self.multi_var_gnlll(pred_dist_samples, means[task_label], covs[task_label])
 
-    def multi_class_gnlll(self, features, means, covs, gt_seg, indices):
-        """
-        features: torch.tensor[B, F, V1, V2, V3]
-        gt_seg: torch.tensor[B]
-        """
-        num_nan = features.isnan().count_nonzero().item()
-        assert num_nan == 0, f"NaN values [{num_nan}] in predicted distribution."
+            total_gnlll = total_gnlll + self.class_weights[i] * l
 
+            if return_est_dists: 
+                
+                if handle_nan:
+                    pred_dist_mean = torch.mean(pred_dist_samples[~pred_dist_samples.isnan()])
+                    pred_dist_var = (pred_dist_samples - pred_dist_mean).square()
+                    pred_dist_var = torch.mean(pred_dist_var[~pred_dist_var.isnan()]) + 0.0001 # numerical stability
+                    # pred_dist_var = torch.var(pred_dist_samples) + 0.0001 # numerical stability
+                else:
+                    pred_dist_mean, pred_dist_var = torch.mean(pred_dist_samples, 1), torch.cov(pred_dist_samples)
+
+                # Clip variance if too large
+                # pred_dist_var = torch.clamp(pred_dist_var, max=1000.0) + torch.eye(pred_dist_var.shape[-1], device=pred_dist_var.device) * 1e-04
+                pred_dist_var = torch.clamp(pred_dist_var, max=1000.0) #+ torch.eye(pred_dist_var.shape[-1], device=pred_dist_var.device) * 1e-04
+                if not is_positive_definite(pred_dist_var):
+                    pred_dist_var = 1. * torch.eye(pred_dist_var.size(-1), device=pred_dist_var.device)
+                
+                pred_dist = MultivariateNormal(pred_dist_mean, pred_dist_var)
+                est_dists.append(pred_dist)
+
+        if return_est_dists:
+            return total_gnlll, est_dists
+        
+        return total_gnlll
+
+    # TODO optimize
+    def multi_var_gnlll(self, value, mean, cov):
+        # total = torch.log(torch.sqrt(torch.det(cov))) + 0.5 * (features - mean) * torch.inverse(cov) * (features - mean)
+        dist = MultivariateNormal(mean, cov)
+        value = value.permute(1, 0)
+        chunk_size = int(262140 * (2 / value.size(1)))
+        val_dev = value.device
+        if value.size(0) <= chunk_size:
+            total = dist.log_prob(value).to(device=val_dev)
+        else:
+            num_chunks = (value.size(0) + chunk_size - 1) // chunk_size
+            log_probs = []
+            for i in range(num_chunks):
+                start_idx = i * chunk_size
+                end_idx = min((i + 1) * chunk_size, value.size(0))
+                chunk = value[start_idx:end_idx, :]#.cpu()  # Move to CPU
+                log_probs.append(dist.log_prob(chunk).to(device=val_dev))#.cuda())  # Move back to GPU if needed
+            total = torch.cat(log_probs, dim=0)
+        # total = -torch.mean(target_dist.log_prob(features.permute(1, 0)))
+        return -torch.mean(total)
 
 
     def gnlll(self, features, means, covs, gt_seg, indices):
@@ -282,7 +331,8 @@ class DynamicDistMatchingLoss(nn.Module):
         if self.loss_type == "kl" :
             return self.forward_kl(*args, **kwargs)
         else:
-            return self.forward_gnlll(*args, **kwargs)
+            # return self.forward_gnlll(*args, **kwargs)
+            return self.forward_multi_var_gnlll(*args, **kwargs)
 
 def is_positive_definite(mat):
     try:

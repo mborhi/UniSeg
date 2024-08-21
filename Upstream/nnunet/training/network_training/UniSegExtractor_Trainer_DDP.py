@@ -267,7 +267,7 @@ class UniSegExtractor_Trainer_DDP(nnUNetTrainerV2_DDP):
                 pass
 
             ######  Initialize target distributions #####
-            torch.cuda.manual_seed_all(42)
+            # torch.cuda.manual_seed_all(42)
             # max_var = 0.001
             self.max_var = 0.001
             delta=1-(1e-03)
@@ -421,8 +421,9 @@ class UniSegExtractor_Trainer_DDP(nnUNetTrainerV2_DDP):
                     # l = self.loss(extractions, self.mus, self.sigs, tc_inds, return_est_dists=self.return_est_dists, with_sep_loss=False)
                     l = self.loss(output, target, lst_extractions[0], self.mus, self.sigs, lst_tc_inds[0], return_est_dists=self.return_est_dists, with_sep_loss=False)
                 else:
+                    l = self.loss(output, target, lst_extractions[0], self.mus, self.sigs, lst_tc_inds[0], return_est_dists=self.return_est_dists, with_sep_loss=False)
                     # l = self.loss(output, self.mus, self.sigs, target[0], tc_inds, pred_dists=extractions, return_est_dists=self.return_est_dists, with_sep_loss=False)
-                    l = self.loss(output, target, output[0], self.mus, self.sigs, target[0], lst_tc_inds[0], pred_dists=lst_extractions[0], return_est_dists=self.return_est_dists, with_sep_loss=False)
+                    # l = self.loss(output, target, output[0], self.mus, self.sigs, target[0], lst_tc_inds[0], pred_dists=lst_extractions[0], return_est_dists=self.return_est_dists, with_sep_loss=False)
                 
                 
                 # Test the dice score:

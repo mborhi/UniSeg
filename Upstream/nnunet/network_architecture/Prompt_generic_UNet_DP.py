@@ -24,16 +24,18 @@ class DynamicDistributionModel_DP(nn.Module):
         self.feature_space_dim = feature_space_dim 
         self.num_components = num_components 
         self.tp_dim = tp_dim
-        self.prompt_out_channel = 4
+        self.prompt_out_channel = 1
 
         hidden_dim = 1000
         
         self.task_mu_modules = nn.ModuleList([
             nn.Sequential(
                 # each task's mean of dim feature space (flattented), scalara vars for each task, task prompt dim, task_id
-                nn.Linear((feature_space_dim * num_components) + (1 * num_components) + (self.prompt_out_channel*tp_dim) + 1, hidden_dim), 
-                nn.ReLU(), 
-                nn.Linear(hidden_dim, feature_space_dim),
+                nn.Linear((feature_space_dim * num_components) + (1 * num_components) + (self.prompt_out_channel*tp_dim) + 1, 1024), 
+                nn.PReLU(), 
+                nn.Linear(1024, 512),
+                nn.PReLU(), 
+                nn.Linear(512, feature_space_dim),
                 nn.Tanh(), 
             )
             for t in range(num_components)
@@ -51,15 +53,31 @@ class DynamicDistributionModel_DP(nn.Module):
         conv_kwargs = {'kernel_size': 3, 'stride': 1, 'padding': 1, 'dilation': 1, 'bias': True}
         dropout_op_kwargs = {'p': 0.5, 'inplace': True}
         norm_op_kwargs = {'eps': 1e-5, 'affine': True, 'momentum': 0.1}
-        self.prompt_conv = ConvDropoutNormNonlin(1, 
-                                                 self.prompt_out_channel, 
-                                                 nn.Conv3d, 
-                                                 conv_kwargs=conv_kwargs, 
-                                                 norm_op=nn.BatchNorm3d, 
-                                                 norm_op_kwargs=norm_op_kwargs,
-                                                 dropout_op=nn.Dropout3d, 
-                                                 dropout_op_kwargs=dropout_op_kwargs
-                                                 )
+        nonlin_kwargs = {'negative_slope': 1e-2, 'inplace': True}
+        # self.prompt_conv = ConvDropoutNormNonlin(1, 
+        #                                          self.prompt_out_channel, 
+        #                                          nn.Conv3d, 
+        #                                          conv_kwargs=conv_kwargs, 
+        #                                          norm_op=nn.InstanceNorm3d, 
+        #                                          norm_op_kwargs=norm_op_kwargs,
+        #                                          dropout_op=nn.Dropout3d, 
+        #                                          dropout_op_kwargs=dropout_op_kwargs
+        #                                          )
+        bottleneck_feature_channel = 3
+        self.prompt_conv = nn.Sequential(
+            *([ConvDropoutNormNonlin(1, bottleneck_feature_channel, nn.Conv3d,
+                           conv_kwargs,
+                           nn.InstanceNorm3d, norm_op_kwargs, nn.Dropout3d, dropout_op_kwargs,
+                           nn.LeakyReLU, nonlin_kwargs)] +
+              [ConvDropoutNormNonlin(bottleneck_feature_channel, bottleneck_feature_channel, nn.Conv3d,
+                           conv_kwargs,
+                           nn.InstanceNorm3d, norm_op_kwargs, nn.Dropout3d, dropout_op_kwargs,
+                           nn.LeakyReLU, nonlin_kwargs)] +
+              [ConvDropoutNormNonlin(bottleneck_feature_channel, self.prompt_out_channel, nn.Conv3d,
+                           conv_kwargs,
+                           nn.InstanceNorm3d, norm_op_kwargs, nn.Dropout3d, dropout_op_kwargs,
+                           nn.LeakyReLU, nonlin_kwargs)]
+              ))
 
         self.momentum = momentum
 
@@ -96,7 +114,6 @@ class DynamicDistributionModel_DP(nn.Module):
 
         self.feature_space_qs = self.best_feature_space_qs
         
-
 
     def distance_bounds(self, k=None, max_var=None, delta=None, m=None, n=1, n_min=1):
         min_num_samples = 500 # min(number of images per class k in batch) * resolution 
