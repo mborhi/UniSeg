@@ -73,6 +73,14 @@ class UniSegExtractor_Trainer_DDP(nnUNetTrainerV2_DDP):
             7: [0, 12], 
             8: [0, 13], 
         }
+        # self.task = {"live":0, "lung":1, "sple":2, "pros":3}
+        # self.task_class = {0: 3, 1: 2, 2: 2, 3: 2}
+        # self.task_id_class_lst_mapping = {
+        #     0: [0, 1, 2], 
+        #     1: [0, 3], 
+        #     2: [0, 4], 
+        #     3: [0, 5], 
+        # }
         if single_task:
             self.task = { "pros":0, }
             self.task_class = {0: 2}
@@ -88,7 +96,7 @@ class UniSegExtractor_Trainer_DDP(nnUNetTrainerV2_DDP):
         self.visual_epoch = -1
         self.total_task_num = 9 if not single_task else 1 # NOTE
         self.batch_size = batch_size
-        self.num_batches_per_epoch = 1000 // (num_gpus * self.batch_size) #int((50 // num_gpus) * self.total_task_num)
+        self.num_batches_per_epoch = (50 * self.total_task_num) // (num_gpus * self.batch_size) #int((50 // num_gpus) * self.total_task_num)
         self.num_val_batches_per_epoch = self.num_batches_per_epoch // 5
         print("num batches per epoch:", self.num_batches_per_epoch)
         print("num batches per val epoch:", self.num_val_batches_per_epoch)
@@ -540,7 +548,7 @@ class UniSegExtractor_Trainer_DDP(nnUNetTrainerV2_DDP):
         self.network.eval()
 
         assert self.was_initialized, "must initialize, ideally with checkpoint (or train first)"
-        self.refill_queue_and_train_gmm()
+        # self.refill_queue_and_train_gmm()
         if self.dataset_val is None:
             self.load_dataset()
             self.do_split()

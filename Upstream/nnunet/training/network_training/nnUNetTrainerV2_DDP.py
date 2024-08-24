@@ -697,6 +697,23 @@ class nnUNetTrainerV2_DDP(nnUNetTrainerV2):
         self.all_tr_losses, self.all_val_losses, self.all_val_losses_tr_mode, self.all_val_eval_metrics = checkpoint[
             'plot_stuff']
 
+        # load targets and Qs
+        self.mus, self.sigs = checkpoint['target_mus'], checkpoint['target_sigs']
+        if torch.cuda.is_available():
+            self.mus = self.mus.cuda()
+            self.sigs = self.sigs.cuda()
+        # self.print_to_log_file("loaded targets:", self.mus, self.sigs)
+
+        for c in range(self.num_components):
+            # self.print_to_log_file(checkpoint[f'Q{c}'])
+            self.dynamic_dist_network.feature_space_qs[c] = checkpoint[f'Q{c}']
+
+        # Train feature space gmm
+        if isinstance(self.network, DDP):
+            self.network.module.train_gmms(self.dynamic_dist_network.feature_space_qs, self.mus, self.sigs)
+        else:
+            self.network.train_gmms(self.dynamic_dist_network.feature_space_qs, self.mus, self.sigs)
+
         # after the training is done, the epoch is incremented one more time in my old code. This results in
         # self.epoch = 1001 for old trained models when the epoch is actually 1000. This causes issues because
         # len(self.all_tr_losses) = 1000 and the plot function will fail. We can easily detect and correct that here

@@ -24,6 +24,7 @@ from torch import nn
 from torch.cuda.amp import GradScaler, autocast
 from torch.optim.lr_scheduler import _LRScheduler
 from torch.nn.parallel.data_parallel import DataParallel
+from torch.nn.parallel.distributed import DistributedDataParallel as DDP
 
 matplotlib.use("agg")
 from time import time, sleep
@@ -398,11 +399,21 @@ class NetworkTrainer(object):
 
         # load targets and Qs
         self.mus, self.sigs = checkpoint['target_mus'], checkpoint['target_sigs']
+        # self.print_to_log_file(self.mus, self.sigs)
         if isinstance(self.network, DataParallel):
             pass 
         else:
             for c in range(self.num_components):
+                # self.print_to_log_file(checkpoint[f'Q{c}'])
                 self.dynamic_dist_network.feature_space_qs[c] = checkpoint[f'Q{c}']
+
+        # Train feature space gmm
+        if isinstance(self.network, DDP):
+            self.network.module.train_gmms(self.dynamic_dist_network.feature_space_qs, self.mus, self.sigs)
+        elif isinstance(self.network, DataParallel):
+            pass 
+        else:
+            self.network.train_gmms(self.dynamic_dist_network.feature_space_qs, self.mus, self.sigs)
 
         # after the training is done, the epoch is incremented one more time in my old code. This results in
         # self.epoch = 1001 for old trained models when the epoch is actually 1000. This causes issues because
