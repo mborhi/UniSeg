@@ -545,6 +545,8 @@ class UniSegExtractor_Trainer_DDP(nnUNetTrainerV2_DDP):
             self.load_dataset()
             self.do_split()
 
+        net.train_gmms(self.dynamic_dist_network.feature_space_qs, self.mus, self.sigs)
+
         if segmentation_export_kwargs is None:
             if 'segmentation_export_params' in self.plans.keys():
                 force_separate_z = self.plans['segmentation_export_params']['force_separate_z']

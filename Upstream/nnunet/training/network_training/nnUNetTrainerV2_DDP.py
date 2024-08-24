@@ -425,7 +425,8 @@ class nnUNetTrainerV2_DDP(nnUNetTrainerV2):
 
             else:# self.epoch + 1 < self.max_num_epochs:
                 # clear queues
-                self.dynamic_dist_network.clear_queues()
+                # self.dynamic_dist_network.clear_queues()
+                pass
 
             epoch_end_time = time()
 
