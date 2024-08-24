@@ -540,12 +540,12 @@ class UniSegExtractor_Trainer_DDP(nnUNetTrainerV2_DDP):
         self.network.eval()
 
         assert self.was_initialized, "must initialize, ideally with checkpoint (or train first)"
-        # self.refill_queue_and_train_gmm()
+        self.refill_queue_and_train_gmm()
         if self.dataset_val is None:
             self.load_dataset()
             self.do_split()
 
-        net.train_gmms(self.dynamic_dist_network.feature_space_qs, self.mus, self.sigs)
+        # net.train_gmms(self.dynamic_dist_network.feature_space_qs, self.mus, self.sigs)
 
         if segmentation_export_kwargs is None:
             if 'segmentation_export_params' in self.plans.keys():
