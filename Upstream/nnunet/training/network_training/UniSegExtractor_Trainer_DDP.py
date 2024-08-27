@@ -60,27 +60,27 @@ class UniSegExtractor_Trainer_DDP(nnUNetTrainerV2_DDP):
         #     8: [0, 13], 
         #     9: [0, 14, 15, 16], 
         # }
-        # self.task = {"live":0, "kidn":1, "hepa":2, "panc":3, "colo":4, "lung":5, "sple":6, "sub-":7, "pros":8}
-        # self.task_class = {0: 3, 1: 3, 2: 3, 3: 3, 4: 2, 5: 2, 6: 2, 7: 2, 8: 2}
-        # self.task_id_class_lst_mapping = {
-        #     0: [0, 1, 2], 
-        #     1: [0, 3, 4], 
-        #     2: [0, 5, 6], 
-        #     3: [0, 7, 8], 
-        #     4: [0, 9], 
-        #     5: [0, 10], 
-        #     6: [0, 11], 
-        #     7: [0, 12], 
-        #     8: [0, 13], 
-        # }
-        self.task = {"live":0, "lung":1, "sple":2, "pros":3}
-        self.task_class = {0: 3, 1: 2, 2: 2, 3: 2}
+        self.task = {"live":0, "kidn":1, "hepa":2, "panc":3, "colo":4, "lung":5, "sple":6, "sub-":7, "pros":8}
+        self.task_class = {0: 3, 1: 3, 2: 3, 3: 3, 4: 2, 5: 2, 6: 2, 7: 2, 8: 2}
         self.task_id_class_lst_mapping = {
             0: [0, 1, 2], 
-            1: [0, 3], 
-            2: [0, 4], 
-            3: [0, 5], 
+            1: [0, 3, 4], 
+            2: [0, 5, 6], 
+            3: [0, 7, 8], 
+            4: [0, 9], 
+            5: [0, 10], 
+            6: [0, 11], 
+            7: [0, 12], 
+            8: [0, 13], 
         }
+        # self.task = {"live":0, "lung":1, "sple":2, "pros":3}
+        # self.task_class = {0: 3, 1: 2, 2: 2, 3: 2}
+        # self.task_id_class_lst_mapping = {
+        #     0: [0, 1, 2], 
+        #     1: [0, 3], 
+        #     2: [0, 4], 
+        #     3: [0, 5], 
+        # }
         if single_task:
             self.task = { "pros":0, }
             self.task_class = {0: 2}
