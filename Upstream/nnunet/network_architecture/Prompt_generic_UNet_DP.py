@@ -170,7 +170,7 @@ class DynamicDistributionModel_DP(nn.Module):
             input_vars = vars.repeat(x.size(0), 1).detach().to(device=x.device)
             task_id = task_id.repeat(x.size(0), 1).detach().to(device=x.device)
             
-            input = torch.cat((input_means, input_vars, task_id, x), -1)
+            input = torch.cat((input_means, input_vars, task_id, x), -1).to(dtype=torch.float16)
             mu_hat_t = self.task_mu_modules[t](input).mean(0) # averaged along batch
             # sigma_hat_t = self.task_sigma_modules[t](input).mean(0) # averaged along batch
 
@@ -341,7 +341,8 @@ class UniSeg_model(Generic_UNet):
         self.tu = []
         self.seg_outputs = []
 
-
+        # NOTE 
+        feature_space_dim = base_num_features * 2
         output_features = base_num_features
         input_features = input_channels
 
@@ -475,6 +476,15 @@ class UniSeg_model(Generic_UNet):
             self.upscale_logits_ops = nn.ModuleList(
                 self.upscale_logits_ops)  # lambda x:x is not a Module so we need to distinguish here
 
+        # self.channel_reduction = nn.Conv3d(num_classes, num_classes, 1, 1, 0, 1, 1, seg_output_use_bias)
+        # self.final_conv = conv_op(self.conv_blocks_localization[-1][-1].output_channels, base_num_features,
+        #                                     1, 1, 0, 1, 1, seg_output_use_bias)
+
+        print("num channels before new block:", self.conv_blocks_localization[-1][-1].output_channels)
+        self.final_extractor = nn.Sequential(StackedConvLayers(self.conv_blocks_localization[-1][-1].output_channels, feature_space_dim, 1,
+                                  self.conv_op, self.conv_kwargs, self.norm_op, self.norm_op_kwargs, self.dropout_op,
+                                  self.dropout_op_kwargs, nn.Tanh, {}, basic_block=basic_block))
+
         if self.weightInitializer is not None:
             self.apply(self.weightInitializer)
             # self.apply(print_module_training_status)
@@ -486,7 +496,6 @@ class UniSeg_model(Generic_UNet):
         
         # NOTE
         # feature_space_dim = 128
-        # self.channel_reduction = nn.Conv3d(num_classes, feature_space_dim, 1, 1, 0, 1, 1, seg_output_use_bias)
         self.final_tanh = nn.Tanh()
 
 
@@ -527,7 +536,9 @@ class UniSeg_model(Generic_UNet):
             x = torch.cat((x, skips[-(u + 1)]), dim=1)
             x = self.conv_blocks_localization[u](x)
             if u + 1 == len(self.tu):
-                seg_outputs.append(self.final_tanh(x))
+                # seg_outputs.append(self.final_tanh(x))
+                # seg_outputs.append(self.final_tanh(self.final_conv(x)))
+                seg_outputs.append(self.final_extractor(x))
             else:
                 seg_outputs.append(self.final_nonlin(self.seg_outputs[u](x)))
 
@@ -710,7 +721,7 @@ class UniSegExtractor_DP(UniSeg_model):
 
         return self.full_segment(features, task_id)
 
-    def segment(self, features: torch.Tensor):
+    def segment(self, features: torch.Tensor, component_indices=None):
 
         b = features.size(0)
         h, w, d = tuple(features.shape[2:])
@@ -718,8 +729,10 @@ class UniSegExtractor_DP(UniSeg_model):
         bview_features = features.permute(0, 2, 3, 4, 1).reshape(b, -1, self.feature_space_dim)
 
         # segmentation = self.feature_space_gmm.classify(bview_features).reshape(features.size())
-        feature_log_probs = self.feature_space_gmm.score(bview_features)
-        feature_log_probs = feature_log_probs.reshape(b, h, w, d, len(self.feature_space_gmm.component_distributions)).permute(0, 4, 1, 2, 3)
+        feature_log_probs = self.feature_space_gmm.score(bview_features, component_indices=component_indices)
+        # feature_log_probs = self.feature_space_gmm.score(bview_features, component_indices=None)
+        # feature_log_probs = feature_log_probs.reshape(b, h, w, d, len(self.feature_space_gmm.component_distributions)).permute(0, 4, 1, 2, 3)
+        feature_log_probs = feature_log_probs.reshape(b, h, w, d, len(component_indices)).permute(0, 4, 1, 2, 3)
         segmentation = torch.argmax(feature_log_probs, dim=1)
 
         return segmentation
@@ -734,6 +747,7 @@ class UniSegExtractor_DP(UniSeg_model):
         return segmentation
 
     def segment_from_dists(self, x, dists, tc_inds_to_cls):
+        1/ 0
         categorical = Categorical(torch.ones(len(dists), device=x.device) / len(dists))
         sampled_feature_space_gmm = GaussianMixtureModel(categorical=categorical, component_distributions=dists)
         feature_space_gmm = None
@@ -750,9 +764,11 @@ class UniSegExtractor_DP(UniSeg_model):
         return std_segmentation
 
     def full_segment(self, x, task_id):
-
-        output_segmentation = self.segment(x)
-        std_output_segmentation = self.standardize_segmentation(output_segmentation, self.class_lst_to_std_mapping)
+        component_indices = self.task_id_class_lst_mapping[task_id[0].item()] if self.task_id_class_lst_mapping is not None else None
+        # component_indices = None # self.task_id_class_lst_mapping[task_id[0].item()] if self.task_id_class_lst_mapping is not None else None
+        std_output_segmentation = self.segment(x, component_indices=component_indices)
+        # output_segmentation = self.segment(x, component_indices=component_indices)
+        # std_output_segmentation = self.standardize_segmentation(output_segmentation, self.class_lst_to_std_mapping)
         # est_seg = torch.nn.functional.one_hot(std_output_segmentation, num_classes_in_gt).permute(0, 4, 1, 2, 3)
         perm_dims = tuple([0, len(x.shape)-1] + list(range(1, len(x.shape)-1)))
         # est_seg = torch.nn.functional.one_hot(std_output_segmentation, len(self.task_id_class_lst_mapping[int(task_id.item())])).permute(perm_dims)

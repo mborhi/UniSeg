@@ -293,6 +293,7 @@ class NetworkTrainer(object):
 
         save_this["target_mus"] = self.mus 
         save_this["target_sigs"] = self.sigs
+        save_this["min_dist"] = self.min_dist
         
         if self.amp_grad_scaler is not None:
             save_this['amp_grad_scaler'] = self.amp_grad_scaler.state_dict()

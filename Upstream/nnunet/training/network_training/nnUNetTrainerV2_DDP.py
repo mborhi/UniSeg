@@ -704,9 +704,15 @@ class nnUNetTrainerV2_DDP(nnUNetTrainerV2):
             self.sigs = self.sigs.cuda()
         # self.print_to_log_file("loaded targets:", self.mus, self.sigs)
 
+        self.min_dist = checkpoint['min_dist']
+
         for c in range(self.num_components):
             # self.print_to_log_file(checkpoint[f'Q{c}'])
             self.dynamic_dist_network.feature_space_qs[c] = checkpoint[f'Q{c}']
+            if torch.cuda.is_available():
+                self.dynamic_dist_network.feature_space_qs[c] = [
+                    s.cuda() for s in self.dynamic_dist_network.feature_space_qs[c]
+                ]
 
         # Train feature space gmm
         if isinstance(self.network, DDP):

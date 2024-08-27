@@ -20,8 +20,11 @@ class GaussianMixtureModel:
         log_probs = torch.stack([dist.log_prob(value) for dist in self.component_distributions], dim=-1)
         return log_probs
 
-    def component_log_probs_chunk(self, value):
-        log_probs = torch.stack([self.chunk_log_prob(value, dist) for dist in self.component_distributions], dim=-1)
+    def component_log_probs_chunk(self, value, component_indices=None):
+        if component_indices is None:
+            component_indices = list(range(len(self.component_distributions)))
+        # log_probs = torch.stack([self.chunk_log_prob(value, dist) for dist in self.component_distributions], dim=-1)
+        log_probs = torch.stack([self.chunk_log_prob(value, self.component_distributions[ind]) for ind in component_indices], dim=-1)
         return log_probs
 
 
@@ -48,9 +51,9 @@ class GaussianMixtureModel:
                 log_probs.append(dist.log_prob(chunk).to(device=val_dev))#.cuda())  # Move back to GPU if needed
             return torch.cat(log_probs, dim=1)
 
-    def score(self, value, chunk=True):
+    def score(self, value, chunk=True, component_indices=None):
         if chunk:
-            log_probs = self.component_log_probs_chunk(value)
+            log_probs = self.component_log_probs_chunk(value, component_indices=component_indices)
         else:
             log_probs = self.component_log_probs(value)
         
