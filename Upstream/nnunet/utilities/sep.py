@@ -1,6 +1,6 @@
 import torch 
 import torch.nn.functional as F
-from torch.distributions import kl_divergence, MultivariateNormal, Normal
+from torch.distributions import kl_divergence, MultivariateNormal, Normal, Categorical, Distribution
 
 def get_pos_neg_sets(inp, gt, match_dims=True):
     """Extracts the values from `inp` that correspond to the positive labeled values in `gt`.
@@ -113,6 +113,111 @@ def kl_divs(dists, target_means, target_covs):
 
     return kls
 
+def component_wise_kl_div(means, covs, means_pred, covs_pred):
+
+    total_kl_div = 0
+    for p in range(means_pred.shape[0]):
+        means_p = means_pred[p]
+        for c, mean_c in enumerate(means_p):
+            cov_c = covs_pred[p, c]
+            
+            pred_dist = MultivariateNormal(mean_c, cov_c)
+            dist = MultivariateNormal(means[p, c], covs[p, c])
+
+            l = kl_divergence(dist, pred_dist)
+
+            total_kl_div = total_kl_div + l
+            
+    return total_kl_div
+
+
+def matrix_logm(A):
+    """
+    Compute the matrix logarithm of a positive definite matrix A.
+    
+    Args:
+        A (torch.Tensor): A positive definite matrix.
+        
+    Returns:
+        torch.Tensor: The matrix logarithm of A.
+    """
+    # Perform eigenvalue decomposition
+    eigvals, eigvecs = torch.linalg.eigh(A)
+    
+    # Apply the logarithm to the eigenvalues
+    log_eigvals = torch.log(eigvals)
+    
+    # Reconstruct the matrix logarithm
+    logA = eigvecs @ torch.diag_embed(log_eigvals) @ eigvecs.transpose(-1, -2)
+    
+    return logA
+
+def riemannian_distance(Sigma1, Sigma2):
+    """
+    Compute the Riemannian distance between two covariance matrices Sigma1 and Sigma2.
+    
+    Args:
+        Sigma1 (torch.Tensor): A positive definite matrix (covariance matrix).
+        Sigma2 (torch.Tensor): Another positive definite matrix (covariance matrix).
+        
+    Returns:
+        torch.Tensor: The Riemannian distance between the two matrices.
+    """
+    # Ensure Sigma1 and Sigma2 are symmetric
+    Sigma1 = 0.5 * (Sigma1 + Sigma1.transpose(-1, -2))
+    Sigma2 = 0.5 * (Sigma2 + Sigma2.transpose(-1, -2))
+    
+    # Compute the square root of Sigma1
+    Sigma1_sqrt = torch.linalg.cholesky(Sigma1)
+    
+    # Compute the inverse of the square root of Sigma1
+    Sigma1_sqrt_inv = torch.linalg.inv(Sigma1_sqrt)
+    
+    # Compute the matrix product Sigma1_sqrt_inv * Sigma2 * Sigma1_sqrt_inv^T
+    middle_term = Sigma1_sqrt_inv @ Sigma2 @ Sigma1_sqrt_inv.transpose(-1, -2)
+    
+    # Compute the matrix logarithm of the middle term
+    # log_middle_term = torch.linalg.logm(middle_term)
+    log_middle_term = matrix_logm(middle_term)
+    
+    # Compute the Frobenius norm of the log of the middle term
+    distance = torch.norm(log_middle_term, 'fro')
+    
+    return distance
+
+def measure_change(means, covs, new_means, new_covs):
+
+    mean_changes = []
+    cov_changes = []
+    for p in range(new_means.shape[0]):
+        means_p = new_means[p]
+        for c, mean_c in enumerate(means_p):
+            cov_c = new_covs[p, c]
+
+            mean_changes.append(torch.norm(means[p, c] - mean_c, 2))
+            cov_changes.append(riemannian_distance(covs[p, c], cov_c))
+
+    return mean_changes, cov_changes
+
+
+def sep(means, min_dist):
+    total_loss = 0
+    for i, mean_i in enumerate(means):
+        for j in range(i + 1, len(means)): 
+            mean_j = means[j]
+            dist = torch.norm(mean_i - mean_j, 2)
+            if (dist - min_dist) + 1e-06 < 0:
+                total_loss += min_dist - dist
+
+    return total_loss
+
+def est_dist_sep_loss(est_means, min_dist, wrt_target=False, **kwargs):
+    est_sep = sep(est_means, min_dist) 
+    if wrt_target:
+        return est_sep, est_sep - sep(kwargs['mus'], min_dist)
+        
+    return est_sep
+    
 if __name__ == "__main__":
     # Test
     b = 2

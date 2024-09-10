@@ -3,17 +3,26 @@ from torch.distributions import MultivariateNormal, Categorical
 
 # Define GMM class
 class GaussianMixtureModel:
-    def __init__(self, categorical: Categorical, component_distributions: MultivariateNormal):
+    def __init__(self, categorical: Categorical, component_distributions):
         self.categorical = categorical
         self.component_distributions = component_distributions
+
+    def set_component_loc(self, comp_idx, new_loc):
+        if isinstance(self.component_distributions[comp_idx], GaussianMixtureModel):
+            K = len(self.component_distributions[comp_idx].component_distributions)
+            for k in range(K):
+                self.component_distributions[comp_idx].set_component_loc(k, new_loc[k])    
+        
+        else:
+            self.component_distributions[comp_idx].loc = new_loc
 
     def sample(self, sample_shape=torch.Size()):
         component_indices = self.categorical.sample(sample_shape)
         samples = torch.stack([self.component_distributions[i].sample() for i in component_indices])
         return samples
 
-    def log_prob(self, value):
-        log_probs = self.component_log_probs(value)
+    def log_prob(self, value, chunk=True):
+        log_probs = self.component_log_probs(value) if not chunk else self.component_log_probs_chunk(value) 
         return torch.logsumexp(log_probs + self.categorical.logits, dim=-1)
 
     def component_log_probs(self, value):
@@ -31,6 +40,7 @@ class GaussianMixtureModel:
     # https://discuss.pytorch.org/t/torch-distributions-multivariatenormal-log-prob-throws-runtimeerror-cuda-error-cublas-status-not-supported-for-large-batch-sizes/177977
     # https://discuss.pytorch.org/t/how-to-use-torch-distributions-multivariate-normal-multivariatenormal-in-multi-gpu-mode/135030/3
     def chunk_log_prob(self, value, dist):
+        # 2^18 = 262140
         chunk_size = int(262140 *  (2 / value.size(0)))
         val_dev = value.device
         if value.size(1) <= chunk_size:
@@ -81,10 +91,27 @@ class GaussianMixtureModel:
 
         return dist
     
-    def all_same_device(self, value, dist: MultivariateNormal):
+    def all_same_device(self, value, dist):
+
+        if isinstance(dist, GaussianMixtureModel):
+            return True
+        
         device = value.device
 
         if dist.loc.device != device or dist.covariance_matrix.device != device or dist.precision_matrix.device != device or dist.scale_tril.device != device:
             return False 
 
         return True
+
+    def bayes(self, value, chunk=True, component_indices=None):
+        prob_sums = []
+        for comp in self.component_distributions:
+            comp_log_probs = comp.component_log_probs_chunk(value, component_indices=component_indices)
+            prob_sums.append(torch.sum(torch.exp(comp_log_probs), dim=1))
+
+        prob_sums = torch.vstack(prob_sums)
+        prob_sums /= torch.sum(prob_sums)
+
+        c = torch.argmax(prob_sums)
+
+        return c 

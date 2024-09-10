@@ -19,6 +19,7 @@ from typing import Tuple
 import matplotlib
 from batchgenerators.utilities.file_and_folder_operations import *
 from nnunet.network_architecture.neural_network import SegmentationNetwork
+from nnunet.network_architecture.Prompt_generic_UNet_DP import TAPFeatureExtractor_DP
 from sklearn.model_selection import KFold
 from torch import nn
 from torch.cuda.amp import GradScaler, autocast
@@ -262,6 +263,9 @@ class NetworkTrainer(object):
         state_dict = self.network.state_dict()
         for key in state_dict.keys():
             state_dict[key] = state_dict[key].cpu()
+        tap_state_dict = self.tap.state_dict()
+        for key in tap_state_dict.keys():
+            tap_state_dict[key] = tap_state_dict[key].cpu()
         lr_sched_state_dct = None
         if self.lr_scheduler is not None and hasattr(self.lr_scheduler,
                                                      'state_dict'):  # not isinstance(self.lr_scheduler, lr_scheduler.ReduceLROnPlateau):
@@ -271,22 +275,29 @@ class NetworkTrainer(object):
             #    lr_sched_state_dct[key] = lr_sched_state_dct[key]
         if save_optimizer:
             optimizer_state_dict = self.optimizer.state_dict()
+            tap_optimizer_state_dict = self.tap_optimizer.state_dict()
         else:
             optimizer_state_dict = None
+            tap_optimizer_state_dict = None
 
         self.print_to_log_file("saving checkpoint...")
         save_this = {
             'epoch': self.epoch + 1,
             'state_dict': state_dict,
             'optimizer_state_dict': optimizer_state_dict,
+            'tap_optimizer_state_dict': tap_optimizer_state_dict,
             'lr_scheduler_state_dict': lr_sched_state_dct,
             'plot_stuff': (self.all_tr_losses, self.all_val_losses, self.all_val_losses_tr_mode,
                            self.all_val_eval_metrics),
-            'best_stuff' : (self.best_epoch_based_on_MA_tr_loss, self.best_MA_tr_loss_for_patience, self.best_val_eval_criterion_MA)
+            'best_stuff' : (self.best_epoch_based_on_MA_tr_loss, self.best_MA_tr_loss_for_patience, self.best_val_eval_criterion_MA),
+            'tap_state_dict': tap_state_dict
         }
         if isinstance(self.network, DataParallel):
             for c in range(self.num_components):
                 save_this[f'Q{c}'] = self.network.module.feature_space_qs[c]
+        elif isinstance(self.network, TAPFeatureExtractor_DP):
+            for c in range(self.num_components):
+                save_this[f'Q{c}'] = self.network.tap.feature_space_qs[c]
         else :
             for c in range(self.num_components):
                 save_this[f'Q{c}'] = self.dynamic_dist_network.feature_space_qs[c]
@@ -297,6 +308,8 @@ class NetworkTrainer(object):
         
         if self.amp_grad_scaler is not None:
             save_this['amp_grad_scaler'] = self.amp_grad_scaler.state_dict()
+        if self.tap_amp_grad_scaler is not None:
+            save_this['tap_amp_grad_scaler'] = self.tap_amp_grad_scaler.state_dict()
 
         torch.save(save_this, fname)
         self.print_to_log_file("done, saving took %.2f seconds" % (time() - start_time))
@@ -369,14 +382,26 @@ class NetworkTrainer(object):
             if key not in curr_state_dict_keys and key.startswith('module.'):
                 key = key[7:]
             new_state_dict[key] = value
+        new_tap_state_dict = OrderedDict()
+        curr_tap_state_dict_keys = list(self.tap.state_dict().keys())
+        # if state dict comes from nn.DataParallel but we use non-parallel model here then the state dict keys do not
+        # match. Use heuristic to make it match
+        for k, value in checkpoint['tap_state_dict'].items():
+            key = k
+            if key not in curr_tap_state_dict_keys and key.startswith('module.'):
+                key = key[7:]
+            new_tap_state_dict[key] = value
 
         if self.fp16:
             self._maybe_init_amp()
             if train:
                 if 'amp_grad_scaler' in checkpoint.keys():
                     self.amp_grad_scaler.load_state_dict(checkpoint['amp_grad_scaler'])
+                if 'tap_amp_grad_scaler' in checkpoint.keys():
+                    self.tap_amp_grad_scaler.load_state_dict(checkpoint['tap_amp_grad_scaler'])
 
         self.network.load_state_dict(new_state_dict)
+        self.tap.load_state_dict(new_tap_state_dict)
         self.epoch = checkpoint['epoch']
         if train:
             optimizer_state_dict = checkpoint['optimizer_state_dict']
@@ -401,7 +426,10 @@ class NetworkTrainer(object):
         # load targets and Qs
         self.mus, self.sigs = checkpoint['target_mus'], checkpoint['target_sigs']
         # self.print_to_log_file(self.mus, self.sigs)
-        if isinstance(self.network, DataParallel):
+        if isinstance(self.network, TAPFeatureExtractor_DP):
+            for c in range(self.num_components):
+                self.network.tap.feature_space_qs[c] = checkpoint[f'Q{c}']
+        elif isinstance(self.network, DataParallel):
             pass 
         else:
             for c in range(self.num_components):
@@ -409,7 +437,10 @@ class NetworkTrainer(object):
                 self.dynamic_dist_network.feature_space_qs[c] = checkpoint[f'Q{c}']
 
         # Train feature space gmm
-        if isinstance(self.network, DDP):
+        if isinstance(self.network, TAPFeatureExtractor_DP):
+            self.network.train_gmms(self.network.tap.feature_space_qs, self.mus, self.sigs)
+            pass 
+        elif isinstance(self.network, DDP):
             self.network.module.train_gmms(self.dynamic_dist_network.feature_space_qs, self.mus, self.sigs)
         elif isinstance(self.network, DataParallel):
             pass 
@@ -434,6 +465,7 @@ class NetworkTrainer(object):
     def _maybe_init_amp(self):
         if self.fp16 and self.amp_grad_scaler is None:
             self.amp_grad_scaler = GradScaler()
+            self.tap_amp_grad_scaler = GradScaler()
 
     def plot_network_architecture(self):
         """
@@ -470,6 +502,7 @@ class NetworkTrainer(object):
         while self.epoch < self.max_num_epochs:
             self.print_to_log_file("\nepoch: ", self.epoch)
             if wandb.run is not None: wandb.log({"epoch": self.epoch})
+            self.recalc_dist = True
             epoch_start_time = time()
             train_losses_epoch = []
 
@@ -489,6 +522,7 @@ class NetworkTrainer(object):
             else:
                 for _ in range(self.num_batches_per_epoch):
                     self.print_to_log_file("iteration:", _)
+                    self.print_to_log_file("recalc:", self.recalc_dist)
                     l = self.run_iteration(self.tr_gen, True) # NOTE With backprop
                     # l = self.run_iteration(self.tr_gen, True, True) # NOTE for debug
                     train_losses_epoch.append(l)
@@ -534,7 +568,9 @@ class NetworkTrainer(object):
             continue_training = self.on_epoch_end()
 
             if self.all_val_eval_metrics[-1] > best_val_eval_metric:
-                if isinstance(self.dynamic_dist_network, DataParallel):
+                if isinstance(self.network, TAPFeatureExtractor_DP):
+                    self.network.tap.best_feature_space_qs = self.network.tap.feature_space_qs
+                elif isinstance(self.network, DataParallel) and isinstance(self.dynamic_dist_network, DataParallel):
                     self.best_feature_space_qs = self.feature_space_qs
                 elif isinstance(self.network, DataParallel):
                     self.dynamic_dist_network.set_best_feature_space_qs()
@@ -545,7 +581,9 @@ class NetworkTrainer(object):
 
 
             if self.epoch + 1 == self.max_num_epochs:
-                if isinstance(self.dynamic_dist_network, DataParallel):
+                if isinstance(self.network, TAPFeatureExtractor_DP):
+                    self.network.tap.feature_space_qs = self.network.tap.best_feature_space_qs
+                elif isinstance(self.dynamic_dist_network, DataParallel):
                     self.feature_space_qs = self.best_feature_space_qs
                 elif isinstance(self.network, DataParallel):
                     self.dynamic_dist_network.use_best_feature_space_qs()
@@ -568,6 +606,7 @@ class NetworkTrainer(object):
 
 
             epoch_end_time = time()
+            
 
             if not continue_training:
                 # allows for early stopping

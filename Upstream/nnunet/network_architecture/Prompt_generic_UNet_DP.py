@@ -13,38 +13,45 @@ from sklearn.mixture._gaussian_mixture import GaussianMixture
 from nnunet.utilities.gmm import GaussianMixtureModel
 import copy
 
-from nnunet.utilities.sep import kl_divs
+from nnunet.utilities.sep import kl_divs, est_dist_sep_loss
 from nnunet.utilities.sep import extract_task_set
 
 import wandb
 
 class DynamicDistributionModel_DP(nn.Module):
-    def __init__(self, feature_space_dim, tp_dim, num_components, momentum, queue_size=5000):
+    def __init__(self, feature_space_dim, tp_dim, num_components, momentum, queue_size=5000, gmm_comps = 1):
         super(DynamicDistributionModel_DP, self).__init__()
         self.feature_space_dim = feature_space_dim 
         self.num_components = num_components 
         self.tp_dim = tp_dim
         self.prompt_out_channel = 1
+        self.gmm_comps = gmm_comps
+
+        # self.acc_mus = [[] for _ in range(num_components)]
+        # self.acc_covs = [[] for _ in range(num_components)]
 
         hidden_dim = 1000
         
         self.task_mu_modules = nn.ModuleList([
             nn.Sequential(
                 # each task's mean of dim feature space (flattented), scalara vars for each task, task prompt dim, task_id
-                nn.Linear((feature_space_dim * num_components) + (1 * num_components) + (self.prompt_out_channel*tp_dim) + 1, 1024), 
+                nn.Linear((feature_space_dim * (num_components*gmm_comps)) + (1 * (num_components*gmm_comps)) + (self.prompt_out_channel*tp_dim) + 1, 1024), 
                 nn.PReLU(), 
                 nn.Linear(1024, 512),
                 nn.PReLU(), 
                 nn.Linear(512, feature_space_dim),
                 nn.Tanh(), 
             )
-            for t in range(num_components)
+            for t in range(num_components * gmm_comps)
+            # for t in range(1)
         ])
         # self.task_sigma_modules = nn.ModuleList([
         #     nn.Sequential(
-        #         nn.Linear((feature_space_dim * num_components) + (1 * num_components) + tp_dim + 1, hidden_dim), 
-        #         nn.ReLU(), 
-        #         nn.Linear(hidden_dim, 1),
+        #         nn.Linear((feature_space_dim * num_components) + (1 * num_components) + (self.prompt_out_channel*tp_dim) + 1, 1024), 
+        #         nn.PReLU(), 
+        #         nn.Linear(1024, 512),
+        #         nn.PReLU(), 
+        #         nn.Linear(512, 1),
         #         nn.ReLU()
         #     )
         #     for t in range(num_components)
@@ -86,20 +93,36 @@ class DynamicDistributionModel_DP(nn.Module):
         self.best_feature_space_qs = None
         
 
+    # def update_queues(self, feature_extracts, tc_inds):
+    #     update_size = 100
+    #     # create mask of accurate feature extractions (highest log-likelihood w.r.t target Gauss.)
+    #     for i, task_id in enumerate(tc_inds):
+    #         idxs = torch.randint(0, feature_extracts[i].shape[-1], (update_size,))
+    #         feature_extracts_ = feature_extracts[i].detach().clone().to(device=feature_extracts[i].device)
+    #         rand_elements = feature_extracts_[:, idxs]
+    #         # Enqueue and Dequeue
+    #         if len(self.feature_space_qs[task_id]) + update_size > self.queue_size:
+    #             for _ in range(len(self.feature_space_qs[task_id]) + update_size - self.queue_size):
+    #                 self.feature_space_qs[task_id].pop(0)
+            
+    #         self.feature_space_qs[task_id].append(rand_elements.reshape(-1, self.feature_space_dim))
+
+
     def update_queues(self, feature_extracts, tc_inds):
         update_size = 100
-        # create mask of accurate feature extractions (highest log-likelihood w.r.t target Gauss.)
         for i, task_id in enumerate(tc_inds):
             idxs = torch.randint(0, feature_extracts[i].shape[-1], (update_size,))
             feature_extracts_ = feature_extracts[i].detach().clone().to(device=feature_extracts[i].device)
             rand_elements = feature_extracts_[:, idxs]
-            # Enqueue and Dequeue
-            if len(self.feature_space_qs[task_id]) + update_size > self.queue_size:
-                for i in range(len(self.feature_space_qs[task_id]) + update_size - self.queue_size):
-                    self.feature_space_qs[task_id].pop(0)
+            rand_elements = rand_elements.reshape(-1, self.feature_space_dim)
             
-            self.feature_space_qs[task_id].append(rand_elements.reshape(-1, self.feature_space_dim))
-
+            # Enqueue and Dequeue
+            current_queue_size = len(self.feature_space_qs[task_id])
+            if current_queue_size + update_size > self.queue_size:
+                excess_size = current_queue_size + update_size - self.queue_size
+                self.feature_space_qs[task_id] = self.feature_space_qs[task_id][excess_size:]
+            
+            self.feature_space_qs[task_id].extend(rand_elements)  # assuming you want to store them as numpy arrays
 
     def clear_queues(self):
 
@@ -115,48 +138,18 @@ class DynamicDistributionModel_DP(nn.Module):
         self.feature_space_qs = self.best_feature_space_qs
         
 
-    def distance_bounds(self, k=None, max_var=None, delta=None, m=None, n=1, n_min=1):
-        min_num_samples = 500 # min(number of images per class k in batch) * resolution 
-        # max_error = 1e-03
-        var_1 = var_2 = 1
-        # n = n_min = 1 
-        w_min = 0.1 
-        C = 1344
-
-        def distance_bound(k=None, max_var=None, delta=None, m=None, n=1, n_min=1):
-            if m is None: 
-                m = min_num_samples
-
-            if max_var is None:
-                max_var = var_1
-
-            if k is None:
-                k = self.num_components
-
-            # Assume that the min number of required samples is met
-            r = np.max((k, C*np.log(n/n_min)))
-            # Distance bound:
-            min_dist = 14 * max_var * np.power(r * np.log(4*m / delta), 1/4)
-
-            # Test whether the number of samples satisfies the actual min required samples derived under the assumption mu's 
-            mu_max = min_dist / 2
-            min_req_samples = (np.power(n, 3) / np.power(w_min, 2)) * (np.log(np.power(np.abs(mu_max), 2) / np.power(max_var, 2)) + np.log(n/delta))
-            if m < min_req_samples:
-                return np.nan 
-            
-            return min_dist 
-
-        return distance_bound(delta=delta)
-
     def forward(self, x, means, vars, tc_inds, with_momentum_update=True):
         # Returns: updated means and vars
         x = self.prompt_conv(x)
         x = x.reshape(x.size(0), -1)
         # self.means = self.means.detach().clone().to(device=x.device)
         # self.vars = self.vars.detach().clone().to(device=x.device)
-        means = means.detach().clone().to(device=x.device)
-        vars = vars.detach().clone().to(device=x.device)
-
+        # means = means.detach().clone().to(device=x.device)
+        # vars = vars.detach().clone().to(device=x.device)
+        sigma_hats = []
+        # mu_hats = [m for m in means]
+        mu_hats = []
+        # mu_hats = []
         for t, task_id in enumerate(tc_inds):
             if not isinstance(task_id, torch.Tensor):
                 task_id = torch.tensor([task_id])[:, None].to(device=x.device)
@@ -171,19 +164,42 @@ class DynamicDistributionModel_DP(nn.Module):
             task_id = task_id.repeat(x.size(0), 1).detach().to(device=x.device)
             
             input = torch.cat((input_means, input_vars, task_id, x), -1).to(dtype=torch.float16)
-            mu_hat_t = self.task_mu_modules[t](input).mean(0) # averaged along batch
-            # sigma_hat_t = self.task_sigma_modules[t](input).mean(0) # averaged along batch
+            mu_hat_t = torch.mean(self.task_mu_modules[t](input), dim=0) # averaged along batch
+            # mu_hat_t = torch.mean(self.task_mu_modules[0](input), dim=0) # averaged along batch
+            # sigma_hat_t = torch.mean(self.task_sigma_modules[t](input), dim=0) # averaged along batch
 
             if with_momentum_update:
-                # updated_var_t = (1 - self.momentum) * sigma_hat_t + (self.momentum * self.vars[t]) + 0.0001 # for numerical stability
+                # updated_var_t = (1 - 0.999) * vars[t] + (0.999 * sigma_hat_t) # + 0.0001 # for numerical stability
+                # # updated_var_t = (1 - 0.999) * vars[0, t] + (0.999 * sigma_hat_t) # + 0.0001 # for numerical stability
+                # sigma_hats.append(updated_var_t)
                 # self.vars[t] = updated_var_t 
-                updated_mean_t = (1 - self.momentum) * mu_hat_t + (self.momentum * means[t])
+                # updated_mean_t = (1 - self.momentum) *  means[t] + (self.momentum * mu_hat_t)
+                # updated_mean_t = (1 - self.momentum) *  means[t] + (self.momentum * mu_hat_t)
+                # [0,..0, 1, ..., 1]
+                # 0, 0
+                # 1, 0
+                #... 4, 0
+                # 5, 1, 
+                # ...
+                # 9, 1 => 9 - (5 * task_id) = 4
+                updated_mean_t = (1 - self.momentum) *  means[task_id, t - (self.gmm_comps * task_id)] + (self.momentum * mu_hat_t)
                 # print(f"updated mean, var {t}: {updated_mean_t}, {updated_var_t}")
-                print(f"updated mean[{t}]: {updated_mean_t}")
-                means[t] = updated_mean_t 
+                # print(f"updated mean[{t}]: {updated_mean_t}")
+                # print(f"updated sig[{t}]: {updated_var_t}")
+                # means[t] = updated_mean_t
+                # mu_hats[t] = updated_mean_t 
+                # mu_hats[task_id][t - (5 * task_id)] = updated_mean_t 
+                mu_hats.append(updated_mean_t) 
+                # mu_hats.append(updated_mean_t)
+
+                # NOTE add to acc
+                # self.acc_mus[t].append(mu_hat_t)
+                # self.acc_covs[t].append(updated_var_t)
             
 
-        return means, vars
+        # return means, vars
+        # return means, sigma_hats
+        return mu_hats, sigma_hats
 
 
 class StackedFusionConvLayers(nn.Module):
@@ -297,6 +313,7 @@ class UniSeg_model(Generic_UNet):
         self.final_nonlin = final_nonlin
         self._deep_supervision = deep_supervision
         self.do_ds = deep_supervision
+        self.final_dc_nonlin = lambda x: F.softmax(x, dim=1)
 
         if conv_op == nn.Conv2d:
             upsample_mode = 'bilinear'
@@ -342,7 +359,7 @@ class UniSeg_model(Generic_UNet):
         self.seg_outputs = []
 
         # NOTE 
-        feature_space_dim = base_num_features * 2
+        feature_space_dim = 3 #base_num_features * 2 #NOTE
         output_features = base_num_features
         input_features = input_channels
 
@@ -453,6 +470,8 @@ class UniSeg_model(Generic_UNet):
         for ds in range(len(self.conv_blocks_localization)):
             self.seg_outputs.append(conv_op(self.conv_blocks_localization[ds][-1].output_channels, num_classes,
                                             1, 1, 0, 1, 1, seg_output_use_bias))
+            # self.seg_outputs.append(conv_op(self.conv_blocks_localization[ds][-1].output_channels, feature_space_dim,
+            #                                 1, 1, 0, 1, 1, seg_output_use_bias))
 
         self.upscale_logits_ops = []
         cum_upsample = np.cumprod(np.vstack(pool_op_kernel_sizes), axis=0)[::-1]
@@ -481,7 +500,7 @@ class UniSeg_model(Generic_UNet):
         #                                     1, 1, 0, 1, 1, seg_output_use_bias)
 
         print("num channels before new block:", self.conv_blocks_localization[-1][-1].output_channels)
-        self.final_extractor = nn.Sequential(StackedConvLayers(self.conv_blocks_localization[-1][-1].output_channels, feature_space_dim, 1,
+        self.final_extractor = nn.Sequential(StackedConvLayers(self.conv_blocks_localization[-1][-1].output_channels, feature_space_dim, 3,
                                   self.conv_op, self.conv_kwargs, self.norm_op, self.norm_op_kwargs, self.dropout_op,
                                   self.dropout_op_kwargs, nn.Tanh, {}, basic_block=basic_block))
 
@@ -538,9 +557,12 @@ class UniSeg_model(Generic_UNet):
             if u + 1 == len(self.tu):
                 # seg_outputs.append(self.final_tanh(x))
                 # seg_outputs.append(self.final_tanh(self.final_conv(x)))
+                # seg_outputs.append(F.normalize(self.final_extractor(x), dim=1))
                 seg_outputs.append(self.final_extractor(x))
             else:
-                seg_outputs.append(self.final_nonlin(self.seg_outputs[u](x)))
+                # seg_outputs.append(self.final_nonlin(self.seg_outputs[u](x)))
+                seg_outputs.append(self.final_dc_nonlin(self.seg_outputs[u](x)))
+                # seg_outputs.append(self.final_tanh(self.seg_outputs[u](x)))
 
         assert x.isnan().count_nonzero() == 0 
         # final_out = self.final_tanh(seg_outputs[-1].mean(dim=1, keepdim=True))
@@ -581,7 +603,7 @@ class UniSegExtractor_DP(UniSeg_model):
         self.num_tasks = num_tasks
         self.feature_space_dim = feature_space_dim
         
-        self.gaussian_mixtures = [GaussianMixture(1) for i in range(num_tasks)]
+        self.gaussian_mixtures = [GaussianMixture(1, tol=1e-4, max_iter=5) for i in range(num_tasks)]
 
         # self.do_ds = True
 
@@ -604,11 +626,35 @@ class UniSegExtractor_DP(UniSeg_model):
 
         self.gmm_fitted = True
     
+    def gmm_analysis(self, feature_space_qs, mus, sigs):
+        sizes = [0.10, 0.25, 0.50, 0.8, 0.9, 1]
+        comp_errors = []
+        for t in range(self.num_tasks):
+            task_queue = feature_space_qs[t] 
+            if len(task_queue) < self.queue_min:
+                continue
+            size_errors = []
+            task_queue = torch.vstack(task_queue).detach().cpu().numpy()
+            for i, size in enumerate(sizes):
+                N = int(task_queue.shape[0] * sizes[i])
+                task_queue_ = task_queue[:N, :]
+                gmm = GaussianMixture(1)
+                gmm.fit(task_queue_)
+
+                dist = np.linalg.norm(mus[t].detach().cpu().numpy() - gmm.means_)
+                size_errors.append(dist)
+                if wandb.run is not None:
+                    wandb.log({f"comp_{t}_error_{size}": dist})
+                    wandb.log({f"comp_{t}_size_{size}": N})
+
+            comp_errors.append(size_errors)
+
 
     def train_gmms(self, feature_space_qs, mus, sigs):
-        if not self.gmm_fitted :
-            self.init_gmms(mus, sigs)
+        # if not self.gmm_fitted :
+        #     self.init_gmms(mus, sigs)
 
+        trained_indices = self.gmm_analysis(feature_space_qs, mus, sigs)
         # Train using queue
         trained_indices = []
         for t in range(self.num_tasks):
@@ -618,17 +664,25 @@ class UniSegExtractor_DP(UniSeg_model):
             task_queue = torch.vstack(task_queue).detach().cpu().numpy()
             self.gaussian_mixtures[t].fit(task_queue)
             trained_indices.append(t)
-        
+
+
+        if self.with_wandb:
+            wandb.log({"trained_inds": trained_indices})
+        print(f"Trained inds: {trained_indices}")
         # Collect params and construct pytorch dist
         # est_means = torch.from_numpy(np.vstack([self.gaussian_mixtures[t].means_ for t in trained_indices]))
         # est_covs = torch.from_numpy(np.vstack([self.gaussian_mixtures[t].covariances_ for t in trained_indices]))
         est_weights = torch.from_numpy(np.vstack([self.gaussian_mixtures[t].weights_ for t in trained_indices]))
         lower_bounds = np.vstack([self.gaussian_mixtures[t].lower_bound_ for t in trained_indices])
 
+        est_means = []
         component_distributions = []
         for t in trained_indices:
             mean_t = torch.from_numpy(self.gaussian_mixtures[t].means_)
             cov_t = torch.from_numpy(self.gaussian_mixtures[t].covariances_)
+            print(f"Stat. diff {t}: {torch.norm(mus[t].detach().cpu() - mean_t)}")
+            wandb.log({f"Stat. diff {t}": torch.norm(mus[t].detach().cpu() - mean_t)})
+            # print(f"Est cov {t}: {cov_t}")
             if torch.cuda.is_available():
                 mean_t = mean_t.cuda()
                 cov_t = cov_t.cuda()
@@ -639,14 +693,19 @@ class UniSegExtractor_DP(UniSeg_model):
                         f'gmm_lower_bound_{t}': self.gaussian_mixtures[t].lower_bound_,
                     })
 
+                    est_means.append(mean_t)
+
             # if len(cov_t.shape) == 2:
             #     cov_t = cov_t.unsqueeze(0).repeat(mean_t.size(0), 1, 1)
 
-            component_distributions.append(MultivariateNormal(mean_t, cov_t))
+            # component_distributions.append(MultivariateNormal(mean_t, cov_t))
+            component_distributions.append(self.construct_torch_gmm(mean_t, cov_t))
 
         # Determine the KL w.r.t these EM-learned dists and targets
-        learned_target_kls = kl_divs(component_distributions, mus, sigs)
+        est_dist, wrt_target = est_dist_sep_loss(est_means, self.min_dist, wrt_target=True, **{'mus': mus[trained_indices]})
         if self.with_wandb:
+            wandb.log({'est_sep_dist':est_dist, 'sep_wrt_target': wrt_target})
+            learned_target_kls = kl_divs(component_distributions, mus, sigs)
             for i, kl in enumerate(learned_target_kls):
                 wandb.log({f'est_gmm_kl_{trained_indices[i]}': kl.item()})
 
@@ -662,6 +721,9 @@ class UniSegExtractor_DP(UniSeg_model):
         return est_weights, lower_bounds
 
     def construct_torch_gmm(self, means, vars):
+        if means.shape[0] == 1:
+            return MultivariateNormal(means, vars)
+
         comp_dists = []
         for t in range(self.num_tasks):
             cov_t = vars[t]
@@ -670,11 +732,17 @@ class UniSegExtractor_DP(UniSeg_model):
             
             comp_dists.append(MultivariateNormal(means[t], cov_t))
 
-        categorical = Categorical(torch.ones(self.num_tasks, device=means.device) / self.num_tasks)
+        categorical = Categorical(torch.ones(means.shape[0], device=means.device) / means.shape[0])
 
-        self.feature_space_gmm = GaussianMixtureModel(categorical, comp_dists)
+        # self.feature_space_gmm = GaussianMixtureModel(categorical, comp_dists)
+        dist = GaussianMixtureModel(categorical, comp_dists)
 
-    def forward(self, x, task_id=None, for_loss=False, **kwargs):
+        return dist
+        
+    def forward(self, x, task_id=None, for_loss=False, uniseg_only=False, **kwargs):
+        if uniseg_only:
+            return super().forward(x, task_task=task_id, get_prompt=True)
+
         if self.training or for_loss:
             return self.forward_train(x, task_id=task_id, **kwargs)
         else :
@@ -690,9 +758,12 @@ class UniSegExtractor_DP(UniSeg_model):
         for norm in norms:
             if self.with_wandb: wandb.log({"output feature space norm (per batch)": norm.item()})
             print(f"output feature space norm (per batch): {norm.item()}")
+            # print(f"features: {features[0].mean(dim=1)}, max: {features[0].max(dim=1)}, min: {features[0].min(dim=1)}")
 
         # extract + permute dims for DP 
         lst_gt_extractions = []
+        # print(f"out features size: {features[0].size()}")
+        # print(f"out features target classes: {target_classes[0]}")
         for i, feature in enumerate(features):
             gt_extractions = [extract_task_set(feature, gt_seg[i], c, keep_dims=True).permute(1, 0) for c in target_classes[i]]
             lst_gt_extractions.append(gt_extractions)
@@ -733,9 +804,26 @@ class UniSegExtractor_DP(UniSeg_model):
         # feature_log_probs = self.feature_space_gmm.score(bview_features, component_indices=None)
         # feature_log_probs = feature_log_probs.reshape(b, h, w, d, len(self.feature_space_gmm.component_distributions)).permute(0, 4, 1, 2, 3)
         feature_log_probs = feature_log_probs.reshape(b, h, w, d, len(component_indices)).permute(0, 4, 1, 2, 3)
-        segmentation = torch.argmax(feature_log_probs, dim=1)
+        # segmentation = torch.argmax(feature_log_probs, dim=1)
+        segmentation = self.bayes(feature_log_probs)
 
         return segmentation
+
+    def bayes(self, log_probs):
+        # print("log probs", log_probs)
+        # probs = torch.exp(log_probs)
+        # scaled = probs / probs.sum(dim=1, keepdim=True)  # shape: [batch, num_components, height, width, depth]
+        # # scaled = torch.exp(scaled)
+        # max_prb, seg = torch.max(scaled, dim=1)
+        # seg += 1
+        # seg[max_prb <= 0.1] = 0
+        # return seg
+        scaled_log_probs = log_probs - torch.logsumexp(log_probs, dim=1, keepdim=True)
+
+        seg = torch.argmax(scaled_log_probs, dim=1)
+
+        return seg
+
 
     def standardize_segmentation(self, segmentation, tc_inds_to_cls):
 
@@ -786,3 +874,307 @@ class UniSegExtractor_DP(UniSeg_model):
     def get_update_target_dist(self):
         return self.update_target_dist
 
+
+
+class TAPFeatureExtractor_DP(UniSeg_model):
+
+    def __init__(self, feature_space_dim, gmm_comps, num_tasks, class_lst_to_std_mapping, task_id_class_lst_mapping, *args, with_wandb=False, **kwargs):
+        super().__init__(*args, **kwargs)
+
+        self.tap = DynamicDistributionModel_DP(feature_space_dim, int(self.intermediate_prompt.numel() / self.num_class), num_tasks, momentum=0.99, queue_size=5000, gmm_comps=gmm_comps)
+
+        self.gaussian_mixtures = [GaussianMixture(gmm_comps, tol=1e-4) for i in range(num_tasks)]
+        self.mus = None 
+        self.covs = None
+
+        self.num_tasks = num_tasks
+        self.feature_space_dim = feature_space_dim
+        self.gmm_comps = gmm_comps
+        
+
+        # self.do_ds = True
+
+        self.queue_min = 1
+        self.gmm_fitted = False
+        self.feature_space_gmm = None
+        self.update_target_dist = False
+
+        self.class_lst_to_std_mapping = class_lst_to_std_mapping
+        self.task_id_class_lst_mapping = task_id_class_lst_mapping
+        self.with_wandb = with_wandb
+
+    def set_feature_space_distribution_parameters(self, mus, covs):
+        
+        self.mus = mus 
+        self.covs = covs
+
+    def reestimate_components(self):
+        pass 
+
+    def adjust_dist_params(self, tp_feats, task_id, tc_inds):
+        tc_inds_rep = np.repeat(tc_inds, self.gmm_comps)
+        # self.covs = [3, 5, dim, dim]
+        input_sigs = []
+        for cov_comp_set in self.covs:
+            for cov in cov_comp_set:
+                input_sigs.append(torch.max(torch.real(torch.linalg.eigvals(cov))))
+
+        input_sigs = torch.stack(input_sigs)
+
+        # input_sigs = torch.tensor([torch.max(torch.real(torch.linalg.eigvals(cov))) for cov in self.covs])
+        # mu_prime, _ = self.tap(tp_feats, self.mus.reshape(-1), input_sigs, tc_inds)
+        mu_prime, _ = self.tap(tp_feats, self.mus, input_sigs, tc_inds_rep)
+
+        # component_indices = self.task_id_class_lst_mapping[task_id[0].item()] if self.task_id_class_lst_mapping is not None else None
+        
+        mu_prime = torch.stack(mu_prime).reshape(len(tc_inds), self.gmm_comps, -1)
+        
+        for t, comp_idx in enumerate(tc_inds):
+            self.feature_space_gmm.set_component_loc(comp_idx, mu_prime[t])
+
+    def forward_train(self, x, task_id=None, gt_seg=None, target_classes=None, update_target_dist=False, **kwargs):
+        features, _, _, tp_feats, _ = super().forward(x, task_id, get_prompt=True)
+        
+        
+        norms = features[0].reshape(features[0].size(0), -1).norm(dim=1)
+        for norm in norms:
+            if self.with_wandb: wandb.log({"output feature space norm (per batch)": norm.item()})
+            print(f"output feature space norm (per batch): {norm.item()}")
+            # print(f"features: {features[0].mean(dim=1)}, max: {features[0].max(dim=1)}, min: {features[0].min(dim=1)}")
+
+        # extract + permute dims for DP 
+        lst_gt_extractions = []
+        for i, feature in enumerate(features):
+            gt_extractions = [extract_task_set(feature, gt_seg[i], c, keep_dims=True).permute(1, 0) for c in target_classes[i]]
+            lst_gt_extractions.append(gt_extractions)
+            
+        tc_inds = self.update_queues(lst_gt_extractions, target_classes, task_id)
+        # self.adjust_dist_params(tp_feats, task_id, tc_inds)
+
+        seg = self.full_segment(features[0], task_id)
+        features[0] = seg
+        
+        return features, lst_gt_extractions[0], tc_inds
+
+    def forward_inference(self, x, task_id=None, gt_seg=None, target_classes=None, **kwargs):
+        features, _, _, tp_feats, _ = super().forward(x, task_id, get_prompt=True)
+        tc_inds = self.task_id_class_lst_mapping[task_id[0].item()]
+        # self.adjust_dist_params(tp_feats, task_id, tc_inds)
+        
+        if gt_seg is not None:
+            # extract + permute dimensions for DP
+            gt_extractions = [extract_task_set(features, gt_seg, c, keep_dims=True).permute(1, 0) for c in target_classes]
+
+            return self.full_segment(features, task_id), gt_extractions
+
+        return self.full_segment(features, task_id)
+
+    def update_queues(self, lst_extractions, lst_target_classes, task_id):
+        # extract tasks per gpu (should be big speed up)
+
+        lst_tc_inds = []
+        k = 0
+        while k < len(lst_extractions):
+        # for k, extractions in enumerate(lst_extractions):
+            extractions = lst_extractions[k]
+            target_classes = lst_target_classes[k]
+            tc_inds = []
+            i, j = 0, 0
+            while i < len(extractions) and j < len(target_classes):
+                # re-arrange dimensions for loss
+                extractions[i] = extractions[i].permute(1, 0)
+                if extractions[i].size(-1) < 2:
+                    _ = extractions.pop(i)
+                else:
+                    c = target_classes[j]
+                    tc_inds.append(self.task_id_class_lst_mapping[int(task_id[0])][int(c)])
+                    # tc_inds.append(self.task_id_class_lst_mapping[int(task_id[0])][int(c) - 1])
+                    i += 1
+                j += 1
+            if len(tc_inds) > 0:
+                lst_tc_inds.append(tc_inds)
+                k+=1
+            else:
+                lst_extractions.pop(k) 
+
+        print(f"tc inds: {lst_tc_inds}")
+        if sum([len(l) for l in lst_tc_inds]) == 0:
+            return 0.
+
+        # Updated Queues using the final feature space outputs
+        # pick random element from extraction 
+        self.tap.update_queues(lst_extractions[0], lst_tc_inds[0])
+
+        return lst_tc_inds[0]
+
+    def init_gmms(self, means, covs):
+        # means, covs = self.dynamic_dist.get_mean_var()
+
+        for i in range(self.num_tasks):
+            self.gaussian_mixtures[i].means_ = means[i].detach().cpu().numpy()
+            self.gaussian_mixtures[i].covariances_ = covs[i].detach().cpu().numpy()#.item() * np.eye(self.feature_space_dim)
+
+        self.gmm_fitted = True
+    
+    def gmm_analysis(self, feature_space_qs, mus, sigs):
+        sizes = [0.10, 0.25, 0.50, 0.8, 0.9, 1]
+        comp_errors = []
+        for t in range(self.num_tasks):
+            task_queue = feature_space_qs[t] 
+            if len(task_queue) < self.queue_min:
+                continue
+            size_errors = []
+            task_queue = torch.vstack(task_queue).detach().cpu().numpy()
+            for i, size in enumerate(sizes):
+                N = int(task_queue.shape[0] * sizes[i])
+                task_queue_ = task_queue[:N, :]
+                gmm = GaussianMixture(1)
+                gmm.fit(task_queue_)
+
+                dist = np.linalg.norm(mus[t].detach().cpu().numpy() - gmm.means_)
+                size_errors.append(dist)
+                if wandb.run is not None:
+                    wandb.log({f"comp_{t}_error_{size}": dist})
+                    wandb.log({f"comp_{t}_size_{size}": N})
+
+            comp_errors.append(size_errors)
+
+
+    def train_gmms(self, feature_space_qs, mus, sigs):
+        # if not self.gmm_fitted :
+        #     self.init_gmms(mus, sigs)
+
+        trained_indices = self.gmm_analysis(feature_space_qs, mus, sigs)
+        # Train using queue
+        trained_indices = []
+        for t in range(self.num_tasks):
+            task_queue = feature_space_qs[t] 
+            if len(task_queue) < self.queue_min:
+                continue
+            task_queue = torch.vstack(task_queue).detach().cpu().numpy()
+            self.gaussian_mixtures[t].fit(task_queue)
+            trained_indices.append(t)
+
+
+        if self.with_wandb:
+            wandb.log({"trained_inds": trained_indices})
+        print(f"Trained inds: {trained_indices}")
+        # Collect params and construct pytorch dist
+        # est_means = torch.from_numpy(np.vstack([self.gaussian_mixtures[t].means_ for t in trained_indices]))
+        # est_covs = torch.from_numpy(np.vstack([self.gaussian_mixtures[t].covariances_ for t in trained_indices]))
+        est_weights = torch.from_numpy(np.vstack([self.gaussian_mixtures[t].weights_ for t in trained_indices]))
+        lower_bounds = np.vstack([self.gaussian_mixtures[t].lower_bound_ for t in trained_indices])
+
+        est_means = []
+        component_distributions = []
+        for t in trained_indices:
+            mean_t = torch.from_numpy(self.gaussian_mixtures[t].means_)
+            cov_t = torch.from_numpy(self.gaussian_mixtures[t].covariances_)
+            print(f"Stat. diff {t}: {torch.norm(mus[t].detach().cpu() - mean_t)}")
+            wandb.log({f"Stat. diff {t}": torch.norm(mus[t].detach().cpu() - mean_t)})
+            # print(f"Est cov {t}: {cov_t}")
+            if torch.cuda.is_available():
+                mean_t = mean_t.cuda()
+                cov_t = cov_t.cuda()
+                if self.with_wandb:
+                    wandb.log({
+                        f'gmm_mean_{t}': mean_t,#.item(), 
+                        f'gmm_var_{t}': cov_t,#.item(), 
+                        f'gmm_lower_bound_{t}': self.gaussian_mixtures[t].lower_bound_,
+                    })
+
+                    est_means.append(mean_t)
+
+            # if len(cov_t.shape) == 2:
+            #     cov_t = cov_t.unsqueeze(0).repeat(mean_t.size(0), 1, 1)
+
+            # component_distributions.append(MultivariateNormal(mean_t, cov_t))
+            component_distributions.append(self.construct_torch_gmm(mean_t, cov_t))
+
+        # Determine the KL w.r.t these EM-learned dists and targets
+        est_dist, wrt_target = est_dist_sep_loss(est_means, self.min_dist, wrt_target=True, **{'mus': mus[trained_indices]})
+        if self.with_wandb:
+            wandb.log({'est_sep_dist':est_dist, 'sep_wrt_target': wrt_target})
+            learned_target_kls = kl_divs(component_distributions, mus, sigs)
+            for i, kl in enumerate(learned_target_kls):
+                wandb.log({f'est_gmm_kl_{trained_indices[i]}': kl.item()})
+
+        # https://discuss.pytorch.org/t/how-to-use-torch-distributions-multivariate-normal-multivariatenormal-in-multi-gpu-mode/135030/3
+        # component_distributions = [
+        #     MultivariateNormal(mean, covariance) for mean, covariance in zip(est_means, est_covs)
+        # ]
+        categorical = Categorical(est_weights)
+        self.feature_space_gmm = GaussianMixtureModel(categorical, component_distributions)
+
+        self.gmm_fitted = True
+        # return est_means, est_covs, est_weights, lower_bounds
+        return est_weights, lower_bounds
+
+    def construct_torch_gmm(self, means, vars):
+        if means.shape[0] == 1:
+            return MultivariateNormal(means, vars)
+
+        comp_dists = []
+        for t in range(means.shape[0]):
+            cov_t = vars[t]
+            # if len(cov_t.shape) != 3:
+            #     cov_t = cov_t.unsqueeze(0).repeat(means[t].size(0), 1, 1)
+            
+            comp_dists.append(MultivariateNormal(means[t], cov_t))
+
+        categorical = Categorical(torch.ones(means.shape[0], device=means.device) / means.shape[0])
+
+        # self.feature_space_gmm = GaussianMixtureModel(categorical, comp_dists)
+        dist = GaussianMixtureModel(categorical, comp_dists)
+
+        return dist
+
+    def construct_feature_space_gmm(self, mus, covs):
+        component_distributions = []
+        for i in range(self.num_tasks):
+            mu, cov = mus[i], covs[i]
+            component_distributions.append(self.construct_torch_gmm(mu, cov))
+
+        categorical = Categorical(torch.ones(self.num_tasks, device=mus.device) / self.num_tasks)
+        self.feature_space_gmm = GaussianMixtureModel(categorical, component_distributions)
+
+    def forward(self, x, task_id=None, for_loss=False, uniseg_only=False, **kwargs):
+
+        if self.training or for_loss:
+            return self.forward_train(x, task_id=task_id, **kwargs)
+        else :
+            return self.forward_inference(x, task_id=task_id, **kwargs)
+
+    def segment(self, features: torch.Tensor, component_indices=None):
+
+        b = features.size(0)
+        h, w, d = tuple(features.shape[2:])
+        bview_features = features.permute(0, 2, 3, 4, 1).reshape(b, -1, self.feature_space_dim)
+
+        feature_log_probs = self.feature_space_gmm.score(bview_features, component_indices=component_indices)
+        feature_log_probs = feature_log_probs.reshape(b, h, w, d, len(component_indices)).permute(0, 4, 1, 2, 3)
+        # segmentation = torch.argmax(feature_log_probs, dim=1)
+        segmentation = self.bayes(feature_log_probs)
+
+        return segmentation
+
+    def bayes(self, log_probs):
+        scaled_log_probs = log_probs - torch.logsumexp(log_probs, dim=1, keepdim=True)
+
+        seg = torch.argmax(scaled_log_probs, dim=1)
+
+        return seg
+
+    def full_segment(self, x, task_id):
+        component_indices = self.task_id_class_lst_mapping[task_id[0].item()] if self.task_id_class_lst_mapping is not None else None
+        # component_indices = None # self.task_id_class_lst_mapping[task_id[0].item()] if self.task_id_class_lst_mapping is not None else None
+        std_output_segmentation = self.segment(x, component_indices=component_indices)
+        # output_segmentation = self.segment(x, component_indices=component_indices)
+        # std_output_segmentation = self.standardize_segmentation(output_segmentation, self.class_lst_to_std_mapping)
+        # est_seg = torch.nn.functional.one_hot(std_output_segmentation, num_classes_in_gt).permute(0, 4, 1, 2, 3)
+        perm_dims = tuple([0, len(x.shape)-1] + list(range(1, len(x.shape)-1)))
+        # est_seg = torch.nn.functional.one_hot(std_output_segmentation, len(self.task_id_class_lst_mapping[int(task_id.item())])).permute(perm_dims)
+        est_seg = torch.nn.functional.one_hot(std_output_segmentation, self.num_classes)
+        est_seg = torch.permute(est_seg, perm_dims)
+
+        return est_seg.to(dtype=torch.float64)

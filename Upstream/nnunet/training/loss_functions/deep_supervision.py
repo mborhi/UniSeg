@@ -14,6 +14,7 @@
 
 
 from torch import nn
+import torch.nn.functional as F
 
 
 class MultipleOutputLoss2(nn.Module):
@@ -43,7 +44,7 @@ class MultipleOutputLoss2(nn.Module):
         return l
 
 class MixedDSLoss(nn.Module):
-    def __init__(self, main_loss, ds_loss, weight_factors=None):
+    def __init__(self, main_loss, ds_loss, weight_factors=None, dice_loss=None):
         """
         use this if you have several outputs and ground truth (both list of same len) and the loss should be computed
         between them (x[0] and y[0], x[1] and y[1] etc)
@@ -54,6 +55,7 @@ class MixedDSLoss(nn.Module):
         self.weight_factors = weight_factors
         self.main_loss = main_loss
         self.ds_loss = ds_loss
+        self.dice_loss = dice_loss
 
     def forward(self, outputs, targets, *args, **kwargs):
         assert isinstance(outputs, (tuple, list)), "x must be either tuple or list"
@@ -75,7 +77,57 @@ class MixedDSLoss(nn.Module):
         l = weights[0] * main_l
         for i in range(1, depth):
             if weights[i] != 0:
+                print(f"outputs[{i}] for ds: {outputs[i].shape}")
                 l += weights[i] * self.ds_loss(outputs[i], targets[i])
         if "return_est_dists" in kwargs and kwargs["return_est_dists"]:
             return l, est_dists
+        return l
+
+    def forward_ce_dc(self, outputs, targets, *args, **kwargs):
+        assert isinstance(outputs, (tuple, list)), "x must be either tuple or list"
+        assert isinstance(targets, (tuple, list)), "y must be either tuple or list"
+        #if self.loss_type == "kl":
+            # l =  self.loss(extractions, self.mus, self.sigs, tc_inds, return_est_dists=self.return_est_dists, with_sep_loss=False)
+        # else:
+        #     l =  self.loss(output, self.mus, self.sigs, target[0], tc_inds, pred_dists=extractions, return_est_dists=self.return_est_dists, with_sep_loss=False)
+                
+        depth = len(outputs)
+        if self.weight_factors is None:
+            weights = [1] * len(depth)
+        else:
+            weights = self.weight_factors
+
+        main_l = self.main_loss(*args, **kwargs)
+        dc_l = self.dice_loss(outputs[0], targets[0])
+        if "return_est_dists" in kwargs and kwargs["return_est_dists"]:
+            main_l, est_dists = main_l
+        l = weights[0] * main_l + dc_l
+        for i in range(1, depth):
+            if weights[i] != 0:
+                print(f"outputs[{i}] for ds: {outputs[i].shape}")
+                l += weights[i] * self.ds_loss(outputs[i], targets[i])
+        if "return_est_dists" in kwargs and kwargs["return_est_dists"]:
+            return l, est_dists
+        return l
+    
+    def forward_dist_ds(self, lst_extractions, mus, sigs, lst_tc_inds, return_est_dists=True, with_sep_loss=False):
+        assert isinstance(lst_extractions, (tuple, list)), "x must be either tuple or list"
+                
+        depth = len(lst_extractions)
+        if self.weight_factors is None:
+            weights = [1] * len(depth)
+        else:
+            weights = self.weight_factors
+
+        l = 0
+        for i in range(0, depth):
+            ds_l = self.ds_loss(lst_extractions[i], mus, sigs, lst_tc_inds[i], return_est_dists=True, with_sep_loss=False)
+            if return_est_dists:
+                ds_l, est_dists = ds_l
+                if i == 0: est_dist = est_dists
+            if weights[i] != 0:
+                l += weights[i] * ds_l
+        
+        if return_est_dists:
+            return l, est_dist
         return l

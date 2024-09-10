@@ -9,7 +9,8 @@ import random
 import itertools
 from nnunet.utilities.to_torch import maybe_to_torch, to_cuda
 from torch.cuda.amp import autocast
-from nnunet.training.network_training.nnUNetTrainerV2_DDP import nnUNetTrainerV2_DDP
+# from nnunet.training.network_training.nnUNetTrainerV2_DDP import nnUNetTrainerV2_DDP
+from nnunet.training.network_training.nnUNetTrainerV2 import nnUNetTrainerV2
 import torch
 import torch.distributed as dist
 from torch.optim import lr_scheduler
@@ -18,7 +19,8 @@ from nnunet.utilities.nd_softmax import softmax_helper
 from torch import nn, distributed
 import SimpleITK as sitk
 import shutil
-from nnunet.network_architecture.Prompt_generic_UNet_DP import UniSeg_model, UniSegExtractor_DP, DynamicDistributionModel_DP
+from nnunet.network_architecture.Prompt_generic_UNet_DP import UniSeg_model, UniSegExtractor_DP, DynamicDistributionModel_DP, TAPFeatureExtractor_DP
+from nnunet.network_architecture.TAP import TAP
 from nnunet.training.dataloading.dataset_loading import DataLoader3D_UniSeg
 from batchgenerators.utilities.file_and_folder_operations import *
 from multiprocessing import Pool
@@ -34,18 +36,18 @@ from nnunet.training.loss_functions.dist_match_loss import DynamicDistMatchingLo
 from nnunet.training.loss_functions.deep_supervision import MixedDSLoss
 from nnunet.training.loss_functions.dice_loss import DC_and_CE_loss, SoftDiceLoss, get_tp_fp_fn_tn
 from torch.nn.parallel import DistributedDataParallel as DDP
-# from nnunet.utilities.sep import get_task_set, extract_task_set
+from nnunet.utilities.sep import component_wise_kl_div, measure_change
 from nnunet.utilities.tensor_utilities import sum_tensor
 import copy 
 import wandb
 
-class UniSegExtractor_Trainer_DDP(nnUNetTrainerV2_DDP):
-    def __init__(self, plans_file, fold, local_rank, output_folder=None, dataset_directory=None, batch_dice=True, stage=None,
-                 unpack_data=True, deterministic=True, distribute_batch_size=False, fp16=False, 
-                 feature_space_dim=32, loss_type="kl", update_iter=1, queue_size=5000, max_num_epochs=1000, 
+class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
+    def __init__(self, plans_file, fold, output_folder=None, dataset_directory=None, batch_dice=True, stage=None,
+                 unpack_data=True, deterministic=True, fp16=False, 
+                 feature_space_dim=32, gmm_comps=5, loss_type="gnlll", update_iter=1, queue_size=5000, max_num_epochs=1000, 
                  batch_size=2, num_gpus=1, single_task=False):
-        super().__init__(plans_file, fold, local_rank, output_folder, dataset_directory, batch_dice, stage, unpack_data,
-                         deterministic, distribute_batch_size, fp16)
+        super().__init__(plans_file, fold, output_folder, dataset_directory, batch_dice, stage, unpack_data,
+                         deterministic, fp16)
         self.max_num_epochs = max_num_epochs
         # self.task = {"live":0, "kidn":1, "hepa":2, "panc":3, "colo":4, "lung":5, "sple":6, "sub-":7, "pros":8, "BraT":9}
         # self.task_class = {0: 3, 1: 3, 2: 3, 3: 3, 4: 2, 5: 2, 6: 2, 7: 2, 8: 2, 9: 4}
@@ -128,11 +130,14 @@ class UniSegExtractor_Trainer_DDP(nnUNetTrainerV2_DDP):
         ### Distribution Matching
         self.update_target_iter = update_iter
         self.feature_space_dim = feature_space_dim
+        self.gmm_comps = gmm_comps
         self.queue_size = queue_size
         self.num_components = len(self.class_lst_to_std_mapping.keys())
         self.update_target_dist = False
         self.return_est_dists = True
         self.loss_type = loss_type
+
+        self.recalc_dist = False
 
     def initialize_network(self):
         """
@@ -179,49 +184,55 @@ class UniSegExtractor_Trainer_DDP(nnUNetTrainerV2_DDP):
 
         # self.network.inference_apply_nonlin = softmax_helper
         # num_components = len(self.class_lst_to_std_mapping.keys())
-        self.network = UniSegExtractor_DP(self.feature_space_dim, 
-                                          self.num_components,  
-                                          copy.deepcopy(self.class_lst_to_std_mapping), 
-                                          copy.deepcopy(self.task_id_class_lst_mapping),
-                                          *uniseg_args, 
-                                          with_wandb=self.with_wandb,
+        self.network = TAPFeatureExtractor_DP(self.feature_space_dim, 
+                                            self.gmm_comps,
+                                            self.num_components,  
+                                            copy.deepcopy(self.class_lst_to_std_mapping), 
+                                            copy.deepcopy(self.task_id_class_lst_mapping),
+                                            *uniseg_args, 
+                                            with_wandb=self.with_wandb,
                                         #   **uniseg_kwargs
                                         )
-        pi = [55, 56, 57, 58, 110, 114]
+        self.tap = TAP(self.feature_space_dim, self.num_components, 0.995, queue_size=5000, gmm_comps = self.gmm_comps)
+        # pi = [55, 56, 57, 58, 110, 114]
         # pi = [53, 54, 55, 56, 57, 58,]
-        ppi = [45, 46, 47, 48, 49, 50, 51 ,52, 105, 109, 110, 111, 112]
-        for i, (p_name, p) in enumerate(self.network.named_parameters()):
-            if i in pi:
-                p.requires_grad = False
-                print(f"{i}: {p_name}")
-                self.print_to_log_file(f"{i}: {p_name}")
-            elif i in ppi:
-                print(f"{i}: {p_name}")
+        # ppi = [45, 46, 47, 48, 49, 50, 51 ,52, 105, 109, 110, 111, 112]
+        # pppi = [45, 46, 47, 48, 49, 50, 51, 52, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100, 101, 105, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140]
+        # for i, (p_name, p) in enumerate(self.network.named_parameters()):
+        #     if i in pppi:
+        #         p.requires_grad = False
+        #         print(f"{i}: {p_name}")
+        #         self.print_to_log_file(f"{i}: {p_name}")
+        #     elif i in pi:
+        #         p.requires_grad = False
+        #         print(f"{i}: {p_name}")
+        #         self.print_to_log_file(f"{i}: {p_name}")
+        #     elif i in ppi:
+        #         print(f"{i}: {p_name}")
+        #     else:
+        #         print({f"{i}: {p_name}"})
 
         
         # print(1 /0)
-        self.network.inference_apply_nonlin = lambda x: x
+        # self.network.inference_apply_nonlin = lambda x: x
         if torch.cuda.is_available():
             self.network.cuda()
+            self.tap.cuda()
 
-        self.tp_dim = int(self.network.intermediate_prompt.numel() / self.network.num_class)
-        # Isn't actually DP, onyl used for further DP modules
-        # self.dynamic_dist_network = DynamicDistributionModel_DP(self.feature_space_dim, self.tp_dim, self.num_components, momentum=0.999, queue_size=self.queue_size)
-        self.dynamic_dist_network = DynamicDistributionModel_DP(self.feature_space_dim, self.tp_dim, self.num_components, momentum=0.999, queue_size=self.queue_size)
-        if torch.cuda.is_available():
-            self.dynamic_dist_network.cuda()
 
         self.network.min_dist = self.min_dist
 
     def initialize_optimizer_and_scheduler(self):
         assert self.network is not None, "self.initialize_network must be called first"
-        # self.optimizer = torch.optim.Adam(self.network.parameters(), self.initial_lr, weight_decay=self.weight_decay,
-        #                                 amsgrad=True)
-        # self.optimizer = torch.optim.Adam(itertools.chain(self.network.parameters(), self.dynamic_dist_network.parameters()), self.initial_lr, weight_decay=self.weight_decay,
-        #                                 amsgrad=True)
-        self.optimizer = torch.optim.Adam(itertools.chain(self.network.parameters(), self.dynamic_dist_network.parameters()), self.initial_lr, weight_decay=self.weight_decay,
+        self.optimizer = torch.optim.Adam(self.network.parameters(), self.initial_lr, weight_decay=self.weight_decay,
                                         amsgrad=True)
         self.lr_scheduler = lr_scheduler.ReduceLROnPlateau(self.optimizer, mode='min', factor=0.2,
+                                                        patience=self.lr_scheduler_patience,
+                                                        verbose=True, threshold=self.lr_scheduler_eps,
+                                                        threshold_mode="abs")
+        self.tap_optimizer = torch.optim.Adam(self.tap.parameters(), self.initial_lr, weight_decay=self.weight_decay,
+                                        amsgrad=True)
+        self.tap_lr_scheduler = lr_scheduler.ReduceLROnPlateau(self.tap_optimizer, mode='min', factor=0.2,
                                                         patience=self.lr_scheduler_patience,
                                                         verbose=True, threshold=self.lr_scheduler_eps,
                                                         threshold_mode="abs")
@@ -261,7 +272,7 @@ class UniSegExtractor_Trainer_DDP(nnUNetTrainerV2_DDP):
             # now wrap the loss
             # self.loss = MultipleOutputLoss2(self.loss, self.ds_loss_weights)
             # self.loss = MultipleOutputLoss2(self.loss, self.ds_loss_weights)
-            self.dc_loss = SoftDiceLoss(batch_dice=True, smooth=1e-5, do_bg=True, apply_nonlin=None, do_one_hot=False)
+            # self.dc_loss = SoftDiceLoss(batch_dice=True, smooth=1e-5, do_bg=True, apply_nonlin=None, do_one_hot=False)
             
             ################# END ###################
 
@@ -270,11 +281,11 @@ class UniSegExtractor_Trainer_DDP(nnUNetTrainerV2_DDP):
             if training:
                 self.dl_tr, self.dl_val = self.get_basic_generators()
                 if self.unpack_data:
-                    if self.local_rank == 0:
-                        print("unpacking dataset")
-                        unpack_dataset(self.folder_with_preprocessed_data)
-                        print("done")
-                    distributed.barrier()
+                    unpack_dataset(self.folder_with_preprocessed_data)
+                    # if self.local_rank == 0:
+                    #     print("unpacking dataset")
+                    #     print("done")
+                    # distributed.barrier()
                 else:
                     print(
                         "INFO: Not unpacking data! Training may be slow due to that. Pray you are not using 2d or you "
@@ -334,25 +345,35 @@ class UniSegExtractor_Trainer_DDP(nnUNetTrainerV2_DDP):
             # vars = [0.03, 0.02, 0.01]
             # vars = [0.08, 0.01, 0.001]
             # vars = [0.12, 0.03, 0.001]
-            vars = [0.001, 0.11, 0.001]#
-            c= 1
+            # vars = [0.001, 0.11, 0.001]#
+            # c= 1
             # c=1.5
             # vars = [1/2, 1/2, 1/2]
             # vars = [0.1, 0.4, 0.1] 
             # vars = [0.001, 0.4, 0.3]
             # vars = [0.3, 0.3, 0.001]# c = 0.65
+            # vars = [1/50, 1/50, 1/50]
+            # c = 2
+            vars = [1/30, 1/30, 1/30]
+            c = 1.5
+            self.csep = c
+            # vars = [2, 2, 2]
+            # c=0.00001
             print(f"{vars}, {c}, {self.feature_space_dim}")
             min_dists = [c * np.sqrt(self.feature_space_dim * v) for i, v in enumerate(vars)]
+            self.min_dists = min_dists
             print(f"{min_dists}")
             self.min_dist = max(min_dists)
             max_trys = 15000
             for t in range(max_trys):
                 if t % 100 == 0: print(t)
                 try:
-                    self.mus = self.init_centers(self.num_components, self.feature_space_dim, min_dists, sort=False)
+                    centers = self.init_centers(self.num_components, self.feature_space_dim, min_dists, sort=False)
                     break
                 except ValueError:
                     pass
+
+            self.mus, self.sigs = self.init_gmm_centers(centers, self.feature_space_dim, min_dists, c)
             
             # self.mus = self.mus.to(dtype=torch.float16)
             # self.mus, self.min_dist, self.max_var = self.optimal_sep(self.num_components, self.feature_space_dim)
@@ -362,10 +383,10 @@ class UniSegExtractor_Trainer_DDP(nnUNetTrainerV2_DDP):
             #     self.max_var * torch.eye(self.feature_space_dim, dtype=torch.float32) for _ in range(self.num_components)
             # ])
             # self.input_vars = self.max_var * torch.ones((1, self.num_components), dtype=torch.float16)
-            self.sigs = torch.stack([
-                vars[i] * torch.eye(self.feature_space_dim, dtype=torch.float32) for i in range(self.num_components)
-            ])
-            self.input_vars = torch.tensor(vars).to(dtype=torch.float16)
+            # self.sigs = torch.stack([
+            #     vars[i] * torch.eye(self.feature_space_dim, dtype=torch.float32) for i in range(self.num_components)
+            # ])
+            # self.input_vars = torch.tensor(vars).to(dtype=torch.float16)
             
             self.print_to_log_file(f"initial means: {self.mus}")
             self.print_to_log_file(f"initial vars: {self.sigs}")
@@ -377,21 +398,25 @@ class UniSegExtractor_Trainer_DDP(nnUNetTrainerV2_DDP):
                 
 
             ##### END ####
-            if wandb.run is not None:
-                self.with_wandb = True 
-            else:
-                self.with_wandb = False
+            self.with_wandb = wandb.run is not None
             self.initialize_network()
             mask = np.array([True] + [True if i < net_numpool - 1 else False for i in range(1, net_numpool)])
             weights[~mask] = 0
             weights = weights / weights.sum()
             self.ds_loss_weights = weights
             self.ds_loss = DC_and_CE_loss({'batch_dice': self.batch_dice, 'smooth': 1e-5, 'do_bg': False}, {})
+            # self.main_loss = DynamicDistMatchingLoss(self.min_dist, loss_type=self.loss_type, with_wandb=self.with_wandb) # NOTE
+            # self.ds_loss = DynamicDistMatchingLoss(self.min_dist, loss_type=self.loss_type, with_wandb=self.with_wandb) # NOTE
+            # self.loss = MixedDSLoss(main_loss=self.main_loss, ds_loss=self.ds_loss, weight_factors=self.ds_loss_weights)
+            # self.loss = MultipleOutputLoss2(DC_and_CE_loss({'batch_dice': self.batch_dice, 'smooth': 1e-5, 'do_bg': False}, {}), self.ds_loss_weights)
+            self.ds_loss = DC_and_CE_loss({'batch_dice': self.batch_dice, 'smooth': 1e-5, 'do_bg': False}, {})
             self.main_loss = DynamicDistMatchingLoss(self.min_dist, loss_type=self.loss_type, with_wandb=self.with_wandb) # NOTE
             # self.ds_loss = DynamicDistMatchingLoss(self.min_dist, loss_type=self.loss_type, with_wandb=self.with_wandb) # NOTE
             self.loss = MixedDSLoss(main_loss=self.main_loss, ds_loss=self.ds_loss, weight_factors=self.ds_loss_weights)
             self.initialize_optimizer_and_scheduler()
-            self.network = DDP(self.network, device_ids=[self.local_rank])
+            # self.network = DDP(self.network, device_ids=[self.local_rank])
+            self.network.set_feature_space_distribution_parameters(self.mus, self.sigs)
+            self.network.construct_feature_space_gmm(self.mus, self.sigs)
             # self.dynamic_dist_network = DDP(self.dynamic_dist_network, device_ids=[self.local_rank])
             self.update_target_dist = False
 
@@ -435,178 +460,120 @@ class UniSegExtractor_Trainer_DDP(nnUNetTrainerV2_DDP):
             
 
         # update_target_dist = False
-
+        print(f"recalc: {self.recalc_dist}")
         self.optimizer.zero_grad()
-        if self.epoch > 0 and (self.epoch + 1) % self.update_target_iter == 0:
+        if self.epoch > 0 and self.recalc_dist:# and (self.epoch + 1) % self.update_target_iter == 0:
             # self.network.set_update_target_dist(True)
-            self.network.module.gmm_fitted = False
+            # self.network.gmm_fitted = False
             # update_target_dist = True
             # self.update_target_dist = not self.update_target_dist
-            self.update_target_dist = not self.update_target_dist
+            # self.update_target_dist = not self.update_target_dist
 
             # NOTE
             # get and set mus/covs from EM on Q
             for t in range(self.num_components):
-                task_queue = self.dynamic_dist_network.feature_space_qs[t] 
+                task_queue = self.network.tap.feature_space_qs[t] 
                 if len(task_queue) < 10:
                     continue
                 task_queue = torch.vstack(task_queue).detach().cpu().numpy()
-                self.network.module.gaussian_mixtures[t].fit(task_queue)
+                self.network.gaussian_mixtures[t].fit(task_queue)
                 # set mean, cov
                 momentum = 0.95
-                mu_hat_t = torch.from_numpy(self.network.module.gaussian_mixtures[t].means_).cuda()
-                sig_hat_t = torch.from_numpy(self.network.module.gaussian_mixtures[t].covariances_).cuda()
+                mu_hat_t = torch.from_numpy(self.network.gaussian_mixtures[t].means_).cuda()
+                sig_hat_t = torch.from_numpy(self.network.gaussian_mixtures[t].covariances_).cuda()
                 self.mus[t] = mu_hat_t #(1 - momentum) * self.mus[t] + (momentum * mu_hat_t)
                 self.sigs[t] = sig_hat_t#(1 - momentum) * self.sigs[t] + (momentum * sig_hat_t)
+
+            self.network.set_feature_space_distribution_parameters(self.mus, self.sigs)
+
+            # Adjust estimated mus and sigs
+            # """
+            # NOTE maybe: min_dists / 2
+            input_covs = []
+            for cov_comp_set in self.sigs:
+                for cov in cov_comp_set:
+                    input_covs.append(torch.max(torch.real(torch.linalg.eigvals(cov))))
+
+            input_covs = torch.stack(input_covs)
+            tc_inds = [0, 1, 2]
+            input_tc_inds = np.repeat(tc_inds, self.gmm_comps)
+            for e in range(120):
+                self.tap_optimizer.zero_grad()
+                new_mus, new_covs = self.tap(self.mus, input_covs, input_tc_inds)
+                # Construct GaussianMixture
+                new_mus = torch.stack(new_mus).reshape(len(tc_inds), self.gmm_comps, -1)
+                new_covs = torch.stack(new_covs).reshape(len(tc_inds), self.gmm_comps, self.feature_space_dim, self.feature_space_dim)
+                # min D_KL(new_gmm, gmm) s.t. c-sep
+                l = self.main_loss.get_dynamic_sep_loss(new_mus, new_covs, self.min_dists, tc_inds, csep=self.csep) \
+                    + 0.2 * component_wise_kl_div(self.mus, self.sigs, new_mus, new_covs)
+                self.print_to_log_file(f"tap loss: {l}")
+                if self.with_wandb:
+                    wandb.log({"tap_loss": l})
+                self.tap_amp_grad_scaler.scale(l).backward(retain_graph=False)
+                self.tap_amp_grad_scaler.unscale_(self.tap_optimizer)
+                torch.nn.utils.clip_grad_norm_(self.tap.parameters(), 12)
+                self.tap_amp_grad_scaler.step(self.tap_optimizer)
+                self.tap_amp_grad_scaler.update()
+
+            # Measure the adjustment:
+            mean_changes, cov_changes = measure_change(self.mus, self.sigs, new_mus, new_covs)
+            for i, (mean_change, cov_change) in enumerate(zip(mean_changes, cov_changes)):
+                self.print_to_log_file(f"mean[{i}] change: {mean_change}")
+                self.print_to_log_file(f"cov[{i}] change: {cov_change}")
+                if self.with_wandb:
+                    wandb.log({f"mean_change[{i}]": mean_change})
+                    wandb.log({f"cov_change[{i}]": cov_change})
+            
+            self.mus, self.sigs = new_mus.detach(), new_covs.detach()
+
+            self.network.set_feature_space_distribution_parameters(self.mus, self.sigs)
+            # self.network.set_feature_space_distribution_parameters(new_mus, new_covs)
+
+            self.recalc_dist = False
+
+            # """
 
         update_target_dist = self.update_target_dist
         # self.print_to_log_file("epoch, update", self.epoch, update_target_dist)
         if self.fp16:
             with autocast():
                 # output = self.network(data, task_id)
-                tc_inds = copy.deepcopy(self.task_id_class_lst_mapping[int(task_id[0])])
+                # tc_inds = copy.deepcopy(self.task_id_class_lst_mapping[int(task_id[0])])
                 # target_classes = target[0].unique().detach().cpu().numpy()
                 lst_target_classes = [target[i].unique().detach().cpu().numpy() for i in range(len(target))]
                 # lst_target_classes = [np.delete(target[i].unique().detach().cpu().numpy(), 0) for i in range(len(target))]
-                output = self.network(data, task_id=task_id, gt_seg=target, target_classes=lst_target_classes, update_target_dist=update_target_dist, for_loss=True)
-
-                # extract tasks per gpu (should be big speed up)
-                output, lst_extractions = output
-                # output, feature_extractions = output
-                
-                # NOTE sanity check output
-                # output = torch.zeros_like(target[0], dtype=torch.float, device=data.device).repeat(1, self.feature_space_dim, 1, 1, 1)
-                # for i, tc_ind in enumerate(tc_inds):
-                #     mask = (target[0] == i)
-                #     for j in range(self.feature_space_dim):  # Loop over the channels
-                #         values = mus[tc_ind][j].repeat(mask.sum())
-                #         output[:, j, :, :, :][mask.squeeze()] = values
-                # univariate sanity check
-                # output = torch.zeros_like(target[0], device=data.device)
-                # mus, sigs = self.network.get_mean_var()
-                # for i, tc_ind in enumerate(tc_inds):
-                #     output[target[0] == i] = mus[tc_ind]
-
-                lst_tc_inds = []
-                k = 0
-                while k < len(lst_extractions):
-                # for k, extractions in enumerate(lst_extractions):
-                    extractions = lst_extractions[k]
-                    target_classes = lst_target_classes[k]
-                    tc_inds = []
-                    i, j = 0, 0
-                    while i < len(extractions) and j < len(target_classes):
-                        # re-arrange dimensions for loss
-                        extractions[i] = extractions[i].permute(1, 0)
-                        if extractions[i].size(-1) < 2:
-                            _ = extractions.pop(i)
-                        else:
-                            c = target_classes[j]
-                            tc_inds.append(self.task_id_class_lst_mapping[int(task_id[0])][int(c)])
-                            # tc_inds.append(self.task_id_class_lst_mapping[int(task_id[0])][int(c) - 1])
-                            i += 1
-                        j += 1
-                    if len(tc_inds) > 0:
-                        lst_tc_inds.append(tc_inds)
-                        k+=1
-                    else:
-                        lst_extractions.pop(k) 
-
-                self.print_to_log_file(f"tc inds: {lst_tc_inds}")
-                if sum([len(l) for l in lst_tc_inds]) == 0:
-                    return 0.
-
-                # Updated Queues using the final feature space outputs
-                # pick random element from extraction 
-                self.dynamic_dist_network.update_queues(lst_extractions[0], lst_tc_inds[0])
-
-                # output, mus, sigs = output
-                # if self.network.get_update_target_dist():
-                if update_target_dist:
-                    output, flat_tp_feats = output
-                    input_sigs = torch.tensor([[self.max_var] * self.num_components])
-                    # self.mus, _ = self.dynamic_dist_network(flat_tp_feats, self.mus, input_sigs, lst_tc_inds[0]) # feature space
-                    new_mus, sigs = self.dynamic_dist_network(flat_tp_feats, self.mus, input_sigs, lst_tc_inds[0]) # feature space
-                    self.print_to_log_file(f"new_mus: {new_mus}")
-                    # self.mus, sigs = self.dynamic_dist_network(flat_tp_feats, self.mus, input_sigs, lst_tc_inds[0])
-                    # for i, idx in enumerate(lst_tc_inds[0]):
-                    #     self.sigs[idx] = sigs[i] * torch.eye(self.feature_space_dim, device=sigs[i].device, dtype=sigs[i].dtype)
-
-                for out in range(1, len(output)):
+                output, features, tc_inds = self.network(data, task_id=task_id, gt_seg=target, target_classes=lst_target_classes, update_target_dist=update_target_dist, for_loss=True)
+                for out in range(len(output)):
                     output[out] = output[out][:, :self.task_class[int(task_id[0])]]
+                
+                
+                # l = self.loss(output, target) lst_extractions[0], self.mus, self.sigs, lst_tc_inds[0 means, covs, indices, handle_nan=False, return_est_dists=False, with_sep_loss=True)
+                l = self.loss(output, target, features, self.mus, self.sigs, tc_inds, return_est_dists=False, handle_nan=False, with_sep_loss=False)
 
                 del data
                 self.print_to_log_file(f"task_id: {task_id}")
-
-                if self.loss_type == "kl":
-                    # l = self.loss(extractions, self.mus, self.sigs, tc_inds, return_est_dists=self.return_est_dists, with_sep_loss=False)
-                    # l = self.loss(output, target, lst_extractions[0], self.mus, self.sigs, lst_tc_inds[0], return_est_dists=self.return_est_dists, with_sep_loss=False)
-                    # l = self.loss.forward_dist_ds(lst_extractions, self.mus, self.sigs, lst_tc_inds, return_est_dists=self.return_est_dists, with_sep_loss=False)
-                    l = self.loss.forward_dist_ds(lst_extractions, new_mus, self.sigs, lst_tc_inds, return_est_dists=self.return_est_dists, with_sep_loss=False)
-                else:
-                    if update_target_dist:
-                        l = self.loss(output, target, lst_extractions[0], new_mus, self.sigs, lst_tc_inds[0], return_est_dists=self.return_est_dists, with_sep_loss=False)
-                    else:
-                        l = self.loss(output, target, lst_extractions[0], self.mus, self.sigs, lst_tc_inds[0], return_est_dists=self.return_est_dists, with_sep_loss=False)
-                    # l = self.loss(output, target, lst_extractions[0], new_mus, self.sigs, lst_tc_inds[0], return_est_dists=self.return_est_dists, with_sep_loss=False)
-                    # l = self.loss.forward_dist_ds(lst_extractions, self.mus, self.sigs, lst_tc_inds, return_est_dists=self.return_est_dists, with_sep_loss=False)
-                    # l = self.loss.forward_dist_ds(lst_extractions, new_mus, self.sigs, lst_tc_inds, return_est_dists=self.return_est_dists, with_sep_loss=False)
-                    # l = self.loss(output, self.mus, self.sigs, target[0], tc_inds, pred_dists=extractions, return_est_dists=self.return_est_dists, with_sep_loss=False)
-                    # l = self.loss(output, target, output[0], self.mus, self.sigs, target[0], lst_tc_inds[0], pred_dists=lst_extractions[0], return_est_dists=self.return_est_dists, with_sep_loss=False)
                 
                 
                 # Test the dice score:
-                if self.return_est_dists: # False
-                    l, est_dists = l
-                if self.return_est_dists and self.epoch > 0:
-                    # l, est_dists = l
-                    with torch.no_grad():
-                        # est_seg = self.network.module.segment_from_dists(output, est_dists, self.class_lst_to_std_mapping)
-                        # if not self.network.module.gmm_fitted:
-                            # self.network.module.init_gmms(self.mus, self.sigs)
-                        self.network.module.train_gmms(self.dynamic_dist_network.feature_space_qs, self.mus, self.sigs)
-                        # self.network.construct_torch_gmm()
-                        # segment output
-                        std_output_segmentation = self.network.module.segment(output[0], component_indices=lst_tc_inds[0])
-                        # output_segmentation = self.network.module.segment(output[0], component_indices=None)
-                        # std_output_segmentation = self.network.module.standardize_segmentation(output_segmentation, copy.copy(self.class_lst_to_std_mapping))
-                        perm_dims = tuple([0, len(output[0].shape)-1] + list(range(1, len(output[0].shape)-1)))
-                        est_seg = torch.nn.functional.one_hot(std_output_segmentation, self.num_classes)
-                        est_seg = torch.permute(est_seg, perm_dims)
-                        # dc_score = self.dc_loss(est_seg.unsqueeze(1), target[0])
-                        dc_score = self.dc_loss(est_seg, target[0])
-                        # self.print_to_log_file(f"Dice Score: {-dc_score.item()}")
-                        if do_backprop:
-                            if self.with_wandb: wandb.log({"train_dc": -dc_score.item()})
-                            self.print_to_log_file(f"train_dc {-dc_score.item()}")
-                        else:
-                            if self.with_wandb: wandb.log({"val_dc": -dc_score.item()})
-                            self.print_to_log_file(f"val_dc {-dc_score.item()}")
+                # if self.return_est_dists and self.epoch > 0:
+                #     # l, est_dists = l
+                #     with torch.no_grad():
+                #         # dc_score = self.dc_loss(est_seg.unsqueeze(1), target[0])
+                #         dc_score = self.dc_loss(output[0], target[0])
+                #         # self.print_to_log_file(f"Dice Score: {-dc_score.item()}")
+                #         if do_backprop:
+                #             if self.with_wandb: wandb.log({"train_dc": -dc_score.item()})
+                #             self.print_to_log_file(f"train_dc {-dc_score.item()}")
+                #         else:
+                #             if self.with_wandb: wandb.log({"val_dc": -dc_score.item()})
+                #             self.print_to_log_file(f"val_dc {-dc_score.item()}")
                 
-                # Get sep loss
-                if update_target_dist:
-                    # sep_loss = self.main_loss.get_sep_loss(self.mus)
-                    sep_loss = self.main_loss.get_sep_loss(new_mus)
-                    if self.with_wandb:
-                        wandb.log({"sep_loss": sep_loss})
-                    self.print_to_log_file(f"sep_loss: {sep_loss}")
-                    
-                    l = l + sep_loss
-                    
-                    # for i, ind in enumerate(lst_tc_inds[0]):
-                    #     # self.mus[ind] = new_mus[i].detach().clone()
-                    #     self.mus[ind] = new_mus[ind].detach().clone()
-
                 if self.with_wandb:
                     wandb.log({"loss": l.item()})
                 self.print_to_log_file(f"loss: {l.item()}")
 
 
             if do_backprop:
-                # NOTE verify that TAP is being updated
-                # Assuming 'model' is your neural network and 'optimizer' is your optimizer
-                # params_before = [param.clone() for param in self.dynamic_dist_network.parameters()]
-                
                 self.amp_grad_scaler.scale(l).backward(retain_graph=True) # NOTE
                 # self.amp_grad_scaler.scale(l).backward(retain_graph=False) # NOTE
                 self.amp_grad_scaler.unscale_(self.optimizer)
@@ -614,41 +581,13 @@ class UniSegExtractor_Trainer_DDP(nnUNetTrainerV2_DDP):
                 self.amp_grad_scaler.step(self.optimizer)
                 self.amp_grad_scaler.update()
 
-                # Perform an optimization step
-                # params_after = [param for param in self.dynamic_dist_network.parameters()]
-
-                # for before, after in zip(params_before, params_after):
-                #     self.print_to_log_file(f"TAP incorrect update [{update_target_dist}]: {(before == after).all()}")  # Should print False if parameters are updated
-
         else:
             pass
 
         if run_online_evaluation:
-            # train GMMs
-            # if not self.network.module.gmm_fitted:
-                # self.network.module.init_gmms(self.mus, self.sigs)
-            self.network.module.train_gmms(self.dynamic_dist_network.feature_space_qs, self.mus, self.sigs)
-            # self.network.construct_torch_gmm()
-            # segment output
-            std_output_segmentation = self.network.module.segment(output[0], component_indices=lst_tc_inds[0])
-            # output_segmentation = self.network.module.segment(output[0], component_indices=None)
-            # std_output_segmentation = self.network.module.standardize_segmentation(output_segmentation, copy.copy(self.class_lst_to_std_mapping))
-            # est_seg = torch.nn.functional.one_hot(std_output_segmentation, num_classes_in_gt).permute(0, 4, 1, 2, 3)
-            perm_dims = tuple([0, len(output[0].shape)-1] + list(range(1, len(output[0].shape)-1)))
-            # est_seg = torch.nn.functional.one_hot(std_output_segmentation, num_classes_in_gt)
-            est_seg = torch.nn.functional.one_hot(std_output_segmentation, self.num_classes)
-            est_seg = torch.permute(est_seg, perm_dims)[:,:self.task_class[int(task_id[0])] ]
-            # wrap in lists
-            self.run_online_evaluation([est_seg], target)
-            # tp, fp, fn, _ = get_tp_fp_fn_tn(std_output_segmentation, target[0])
-            # tp_hard, fp_hard, fn_hard = self.get_hard_tp_fp_fn(est_seg, target[0])
-            # self.run_online_evaluation(tp_hard, fp_hard, fn_hard)
+            self.run_online_evaluation(output, target)
 
         del target
-
-        if (self.epoch + 1) % self.update_target_iter == 0:
-                # self.network.set_update_target_dist(False)
-                update_target_dist = False # redundant 
 
         return l.detach().cpu().numpy()
 
@@ -928,9 +867,9 @@ class UniSegExtractor_Trainer_DDP(nnUNetTrainerV2_DDP):
         for b in range(self.num_batches_per_epoch // 2):
             self.run_iteration(tr_gen, False, False)
 
-        if not self.network.module.gmm_fitted:
+        if not self.network.gmm_fitted:
             # self.network.module.init_gmms(self.mus, self.sigs)
-            self.network.module.train_gmms(self.dynamic_dist_network.feature_space_qs, self.mus, self.sigs)
+            self.network.train_gmms(self.dynamic_dist_network.feature_space_qs, self.mus, self.sigs)
 
 
     def poisson_disk_sample(self, N, d, m, k=100):
@@ -1103,3 +1042,38 @@ class UniSegExtractor_Trainer_DDP(nnUNetTrainerV2_DDP):
             centers = sorted(centers, key=lambda x: np.linalg.norm(x))
         centers = torch.from_numpy(np.vstack(centers))
         return centers
+
+    def init_gmm_centers(self, centers, dim, ms, c):
+        K = self.gmm_comps
+        N = len(centers)
+        all_comp_centers = [[] for _ in range(N)]
+        all_comp_centers_torch = [torch.empty(K, dim) for _ in range(N)]
+        all_comp_covs_torch = [torch.empty(K, dim, dim) for _ in range(N)]
+        for i, center in enumerate(centers):
+            m = ms[i]
+            for k in range(K):
+                comp_cov = (np.power(m/(2*c), 2) / dim) * torch.eye(dim) + (1e-05*torch.eye(dim))
+                all_comp_covs_torch[i][k, :] = comp_cov
+                comp_center = np.random.uniform(center-(m/2), center+(m/2))
+                all_comp_centers_torch[i][k] = torch.from_numpy(comp_center)
+
+        return torch.stack(all_comp_centers_torch), torch.stack(all_comp_covs_torch)
+
+
+        # dists = []
+        # for i, center_set in enumerate(all_comp_centers):
+        #     weights = torch.ones(K) / K
+        #     dist = GaussianMixtureModel(
+        #         Categorical(weights), 
+        #         [
+        #             MultivariateNormal(torch.from_numpy(center_set[k]), 0.001*torch.eye(dim))
+        #             for k in range(K)
+        #         ]
+        #     )
+        #     dists.append(dist)
+
+        # weights = Categorical(torch.ones(N) / N)
+        # comp_gmm = GaussianMixtureModel(weights, dists)
+
+
+        

@@ -61,6 +61,24 @@ def main():
                         help="hands off. This is not intended to be used")
     parser.add_argument("--fp32", required=False, default=False, action="store_true",
                         help="disable mixed precision training and run old school fp32")
+    parser.add_argument("--single_task", required=False, default=False, action="store_true",
+                        help="disable mixed precision training and run old school fp32")
+    parser.add_argument("-feature_space_dim", required=False, default=32, type=int,
+                        help="feature space dimension of model")
+    parser.add_argument("-gmm_comps", required=False, default=5, type=int,
+                        help="The number of components for each GMM representing each class")
+    parser.add_argument("-loss_type", required=False, default="kl", type=str,
+                        help="The loss type to use")
+    parser.add_argument("-update_iter", required=False, default=10, type=int,
+                        help="The number of training iterations after which to update the target")
+    parser.add_argument("-queue_size", required=False, default=5000, type=int,
+                        help="The size of each class' feature space queue")
+    parser.add_argument("-max_num_epochs", required=False, default=1000, type=int,
+                        help="The maximum number of epochs to run training for")
+    parser.add_argument("-batch_size", required=False, default=2, type=int,
+                        help="The batch size")
+    parser.add_argument("-num_gpus", required=True, type=int,
+                        help="number of gpus")
     parser.add_argument("--val_folder", required=False, default="validation_raw",
                         help="name of the validation folder. No need to use this for most people")
     parser.add_argument("--disable_saving", required=False, action='store_true',
@@ -92,6 +110,10 @@ def main():
                              'Optional. Beta. Use with caution.')
     parser.add_argument('-exp_name', type=str, required=True, default=None,
                         help='exp name')
+    parser.add_argument("--with_wandb", required=False, default=False, action="store_true",
+                        help="log data with wandb")
+    parser.add_argument('-wandb_project_name', type=str, required=False, default=None,
+                        help='wandb project name name')
 
 
     args = parser.parse_args()
@@ -138,6 +160,8 @@ def main():
     # else:
     #     raise ValueError("force_separate_z must be None, True or False. Given: %s" % force_separate_z)
 
+
+
     plans_file, output_folder_name, dataset_directory, batch_dice, stage, \
     trainer_class = get_default_configuration(exp_name, network, task, network_trainer, plans_identifier)
 
@@ -153,10 +177,41 @@ def main():
         assert issubclass(trainer_class,
                           nnUNetTrainer), "network_trainer was found but is not derived from nnUNetTrainer"
 
-    trainer = trainer_class(plans_file, fold, output_folder=output_folder_name, dataset_directory=dataset_directory,
-                            batch_dice=batch_dice, stage=stage, unpack_data=decompress_data,
-                            deterministic=deterministic,
-                            fp16=run_mixed_precision)
+    if args.with_wandb:
+        wandb.init(
+            project=args.wandb_project_name,
+            config={
+                "exp_name": exp_name,
+                "debug": False,
+                "network": network, 
+                "feature_space_dim": args.feature_space_dim, 
+                "gmm_comps": args.gmm_comps,
+                "loss_type": args.loss_type,
+                "update_iter": args.update_iter,
+                "queue_size": args.queue_size, 
+                "batch_size": args.batch_size,
+                "task": args.task
+            }
+        )
+    # trainer = trainer_class(plans_file, fold, output_folder=output_folder_name, dataset_directory=dataset_directory,
+    #                         batch_dice=batch_dice, stage=stage, unpack_data=decompress_data,
+    #                         deterministic=deterministic,
+    #                         fp16=run_mixed_precision)
+
+    trainer = trainer_class(plans_file, fold, output_folder=output_folder_name,
+                            dataset_directory=dataset_directory, batch_dice=batch_dice, stage=stage,
+                            unpack_data=decompress_data, deterministic=deterministic, fp16=not fp32,
+                            # distribute_batch_size=args.dbs, 
+                            feature_space_dim=args.feature_space_dim, 
+                            gmm_comps=args.gmm_comps,
+                            loss_type=args.loss_type, 
+                            update_iter=args.update_iter, 
+                            queue_size=args.queue_size, 
+                            max_num_epochs=args.max_num_epochs, 
+                            batch_size=args.batch_size, 
+                            num_gpus=args.num_gpus, 
+                            single_task=args.single_task)
+
     if args.disable_saving:
         trainer.save_final_checkpoint = False # whether or not to save the final checkpoint
         trainer.save_best_checkpoint = False  # whether or not to save the best checkpoint according to
@@ -166,19 +221,8 @@ def main():
         trainer.save_latest_only = True  # if false it will not store/overwrite _latest but separate files each
 
     trainer.initialize(not validation_only)
-    init_means, init_vars = trainer.network.dynamic_dist.get_mean_var()
-    wandb.init(
-        project="Target-Distribution-Matching-UniSeg-Single-Task-HD",
-        config={
-            "exp_name": exp_name,
-            "debug": False,
-            "network": network, 
-            "initial_means": init_means, 
-            "initial_vars": init_vars, 
-            "feature_space_dim": 32, 
-            "task": "Prostate"
-        }
-    )
+    # init_means, init_vars = trainer.network.dynamic_dist.get_mean_var()
+    
 
     if find_lr:
         trainer.find_lr()
