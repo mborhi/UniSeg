@@ -304,6 +304,7 @@ class NetworkTrainer(object):
 
         save_this["target_mus"] = self.mus 
         save_this["target_sigs"] = self.sigs
+        save_this["target_weights"] = self.weights
         save_this["min_dist"] = self.min_dist
         
         if self.amp_grad_scaler is not None:
@@ -425,6 +426,7 @@ class NetworkTrainer(object):
 
         # load targets and Qs
         self.mus, self.sigs = checkpoint['target_mus'], checkpoint['target_sigs']
+        self.weights = checkpoint['target_weights']
         # self.print_to_log_file(self.mus, self.sigs)
         if isinstance(self.network, TAPFeatureExtractor_DP):
             for c in range(self.num_components):
@@ -498,11 +500,15 @@ class NetworkTrainer(object):
         if not self.was_initialized:
             self.initialize(True)
 
-        best_val_eval_metric = -1.
+        just_updated = False
+        self.best_val_eval_metric = -1.
+        self.prev_high = -1.
+        self.n_iter_not_improved = 0 
         while self.epoch < self.max_num_epochs:
             self.print_to_log_file("\nepoch: ", self.epoch)
             if wandb.run is not None: wandb.log({"epoch": self.epoch})
             self.recalc_dist = True
+            self.recalced = False
             epoch_start_time = time()
             train_losses_epoch = []
 
@@ -527,6 +533,19 @@ class NetworkTrainer(object):
                     # l = self.run_iteration(self.tr_gen, True, True) # NOTE for debug
                     train_losses_epoch.append(l)
                     # if _ == 10: break # NOTE
+
+            # if self.epoch > 0 and (self.epoch + 1) % self.update_target_iter == 0:
+            if self.epoch > 0 and self.recalced and (self.epoch + 1) % self.update_target_iter == 0:
+                self.tap_amp_grad_scaler.unscale_(self.tap_optimizer)
+                torch.nn.utils.clip_grad_norm_(self.tap.parameters(), 12)
+                self.tap_amp_grad_scaler.step(self.tap_optimizer)
+                self.tap_amp_grad_scaler.update()
+                self.tap_optimizer.zero_grad()
+                self.recalced = False
+                self.mus = [m.detach() for m in self.mus]
+                self.sigs = [s.detach() for s in self.sigs]
+
+                just_updated = True
 
             # print("task_pool", self.task_index)
             self.print_to_log_file("task_pool: "+str(self.task_index))
@@ -567,7 +586,7 @@ class NetworkTrainer(object):
 
             continue_training = self.on_epoch_end()
 
-            if self.all_val_eval_metrics[-1] > best_val_eval_metric:
+            if self.all_val_eval_metrics[-1] > self.best_val_eval_metric:
                 if isinstance(self.network, TAPFeatureExtractor_DP):
                     self.network.tap.best_feature_space_qs = self.network.tap.feature_space_qs
                 elif isinstance(self.network, DataParallel) and isinstance(self.dynamic_dist_network, DataParallel):
@@ -577,7 +596,14 @@ class NetworkTrainer(object):
                 else:
                     self.network.set_best_feature_space_qs()
 
-                best_val_eval_metric = self.all_val_eval_metrics[-1]
+                self.best_val_eval_metric = self.all_val_eval_metrics[-1]
+            
+            if self.all_val_eval_metrics[-1] > self.prev_high or just_updated:
+                self.n_iter_not_improved = 0
+                self.prev_high = self.all_val_eval_metrics[-1]
+                just_updated = False
+            else :
+                self.n_iter_not_improved += 1
 
 
             if self.epoch + 1 == self.max_num_epochs:

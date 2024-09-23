@@ -83,6 +83,35 @@ class MixedDSLoss(nn.Module):
             return l, est_dists
         return l
 
+    def forward_dist_dc_ds(self, outputs, targets, features, lst_tc_inds, mus, sigs, **kwargs):
+    # def forward_dist_dc_ds(self, outputs, targets, features, *args, **kwargs):
+        assert isinstance(outputs, (tuple, list)), "x must be either tuple or list"
+        assert isinstance(targets, (tuple, list)), "y must be either tuple or list"
+
+        depth = len(outputs)
+        if self.weight_factors is None:
+            weights = [1] * len(depth)
+        else:
+            weights = self.weight_factors
+
+        main_l = self.main_loss(features[0], mus, sigs, lst_tc_inds[0], **kwargs)
+        dc_l = self.dice_loss(outputs[0], targets[0])
+        if "return_est_dists" in kwargs and kwargs["return_est_dists"]:
+            main_l, est_dists = main_l
+        l = weights[0] * (main_l + dc_l)
+        for i in range(1, depth):
+            if weights[i] != 0:
+                print(f"outputs[{i}] for ds: {outputs[i].shape}")
+                ce_l = self.main_loss(features[i], mus, sigs, lst_tc_inds[i], **kwargs)
+                if "return_est_dists" in kwargs and kwargs["return_est_dists"]:
+                    ce_l, _  = ce_l
+                l += weights[i] * (ce_l + self.dice_loss(outputs[i], targets[i]))
+        if "return_est_dists" in kwargs and kwargs["return_est_dists"]:
+            return l, est_dists
+        return l
+
+
+
     def forward_ce_dc(self, outputs, targets, *args, **kwargs):
         assert isinstance(outputs, (tuple, list)), "x must be either tuple or list"
         assert isinstance(targets, (tuple, list)), "y must be either tuple or list"
@@ -101,7 +130,7 @@ class MixedDSLoss(nn.Module):
         dc_l = self.dice_loss(outputs[0], targets[0])
         if "return_est_dists" in kwargs and kwargs["return_est_dists"]:
             main_l, est_dists = main_l
-        l = weights[0] * main_l + dc_l
+        l = weights[0] * (main_l + dc_l)
         for i in range(1, depth):
             if weights[i] != 0:
                 print(f"outputs[{i}] for ds: {outputs[i].shape}")

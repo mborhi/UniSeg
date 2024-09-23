@@ -36,7 +36,7 @@ from nnunet.training.loss_functions.dist_match_loss import DynamicDistMatchingLo
 from nnunet.training.loss_functions.deep_supervision import MixedDSLoss
 from nnunet.training.loss_functions.dice_loss import DC_and_CE_loss, SoftDiceLoss, get_tp_fp_fn_tn
 from torch.nn.parallel import DistributedDataParallel as DDP
-from nnunet.utilities.sep import component_wise_kl_div, measure_change
+from nnunet.utilities.sep import component_wise_kl_div, measure_change, is_positive_definite
 from nnunet.utilities.tensor_utilities import sum_tensor
 import copy 
 import wandb
@@ -67,14 +67,14 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
         # self.task_class = {0: 3, 1: 3, 2: 3, 3: 3, 4: 2, 5: 2, 6: 2, 7: 2, 8: 2}
         # self.task_id_class_lst_mapping = {
         #     0: [0, 1, 2], 
-        #     1: [0, 3, 4], 
-        #     2: [0, 5, 6], 
-        #     3: [0, 7, 8], 
-        #     4: [0, 9], 
-        #     5: [0, 10], 
-        #     6: [0, 11], 
-        #     7: [0, 12], 
-        #     8: [0, 13], 
+        #     1: [0, 1, 2], 
+        #     2: [0, 1, 2], 
+        #     3: [0, 1, 2], 
+        #     4: [0, 1], 
+        #     5: [0, 1], 
+        #     6: [0, 1], 
+        #     7: [0, 1], 
+        #     8: [0, 1], 
         # }
         # self.task = {"pros":0, "lung":1, "sple":2, "live":3}
         # self.task_class = {0: 2, 1: 2, 2: 2, 3: 3}
@@ -137,6 +137,8 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
         self.return_est_dists = True
         self.loss_type = loss_type
 
+        self.max_gmm_comps = 10
+
         self.recalc_dist = False
 
     def initialize_network(self):
@@ -193,7 +195,9 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
                                             with_wandb=self.with_wandb,
                                         #   **uniseg_kwargs
                                         )
-        self.tap = TAP(self.feature_space_dim, self.num_components, 0.995, queue_size=5000, gmm_comps = self.gmm_comps)
+        # self.tap = TAP(self.feature_space_dim, self.num_components, 0.995, queue_size=5000, gmm_comps = self.gmm_comps)
+        # self.tap = TAP(self.feature_space_dim, self.num_components, 0.995, queue_size=5000, gmm_comps = 10)
+        self.tap = TAP(self.feature_space_dim, self.num_components, 0.995, queue_size=5000, gmm_comps = self.max_gmm_comps)
         # pi = [55, 56, 57, 58, 110, 114]
         # pi = [53, 54, 55, 56, 57, 58,]
         # ppi = [45, 46, 47, 48, 49, 50, 51 ,52, 105, 109, 110, 111, 112]
@@ -352,6 +356,7 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
             # vars = [0.1, 0.4, 0.1] 
             # vars = [0.001, 0.4, 0.3]
             # vars = [0.3, 0.3, 0.001]# c = 0.65
+            # c=0.65
             # vars = [1/50, 1/50, 1/50]
             # c = 2
             vars = [1/30, 1/30, 1/30]
@@ -374,6 +379,8 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
                     pass
 
             self.mus, self.sigs = self.init_gmm_centers(centers, self.feature_space_dim, min_dists, c)
+            # self.mus, self.sigs = self.init_from_fixed()
+            self.weights = self.init_uniform_mixture_weights()
             
             # self.mus = self.mus.to(dtype=torch.float16)
             # self.mus, self.min_dist, self.max_var = self.optimal_sep(self.num_components, self.feature_space_dim)
@@ -393,8 +400,15 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
             self.print_to_log_file(f"min dist: {self.min_dist}")
 
             if torch.cuda.is_available():
-                self.mus = self.mus.cuda()
-                self.sigs = self.sigs.cuda()
+                if isinstance(self.mus, list):
+                    for t in range(self.num_components):
+                        # self.print_to_log_file(f"prev size {t}: {[m.size() for m in self.mus[t]]}")
+                        self.mus[t] = self.mus[t].cuda()
+                        self.sigs[t] = self.sigs[t].cuda()
+                        self.weights[t] = self.weights[t].cuda()
+                else:
+                    self.mus = self.mus.cuda()
+                    self.sigs = self.sigs.cuda()
                 
 
             ##### END ####
@@ -410,15 +424,19 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
             # self.loss = MixedDSLoss(main_loss=self.main_loss, ds_loss=self.ds_loss, weight_factors=self.ds_loss_weights)
             # self.loss = MultipleOutputLoss2(DC_and_CE_loss({'batch_dice': self.batch_dice, 'smooth': 1e-5, 'do_bg': False}, {}), self.ds_loss_weights)
             self.ds_loss = DC_and_CE_loss({'batch_dice': self.batch_dice, 'smooth': 1e-5, 'do_bg': False}, {})
+            dc_loss = SoftDiceLoss(apply_nonlin=lambda x: x, **{'batch_dice': self.batch_dice, 'smooth': 1e-5, 'do_bg': False})
             self.main_loss = DynamicDistMatchingLoss(self.min_dist, loss_type=self.loss_type, with_wandb=self.with_wandb) # NOTE
             # self.ds_loss = DynamicDistMatchingLoss(self.min_dist, loss_type=self.loss_type, with_wandb=self.with_wandb) # NOTE
-            self.loss = MixedDSLoss(main_loss=self.main_loss, ds_loss=self.ds_loss, weight_factors=self.ds_loss_weights)
+            # self.loss = MixedDSLoss(main_loss=self.main_loss, ds_loss=self.ds_loss, weight_factors=self.ds_loss_weights)
+            self.loss = MixedDSLoss(main_loss=self.main_loss, ds_loss=self.ds_loss, dice_loss=dc_loss, weight_factors=self.ds_loss_weights)
             self.initialize_optimizer_and_scheduler()
             # self.network = DDP(self.network, device_ids=[self.local_rank])
             self.network.set_feature_space_distribution_parameters(self.mus, self.sigs)
             self.network.construct_feature_space_gmm(self.mus, self.sigs)
             # self.dynamic_dist_network = DDP(self.dynamic_dist_network, device_ids=[self.local_rank])
             self.update_target_dist = False
+
+            self.main_loss.dist_weights = self.weights
 
             # assert isinstance(self.network, (SegmentationNetwork, nn.DataParallel))
         else:
@@ -459,79 +477,17 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
             target = to_cuda(target, gpu_id=None) 
             
 
-        # update_target_dist = False
         print(f"recalc: {self.recalc_dist}")
         self.optimizer.zero_grad()
+        # if self.epoch > 0 and self.recalc_dist:# and (self.epoch + 1) % self.update_target_iter == 0:
         if self.epoch > 0 and self.recalc_dist:# and (self.epoch + 1) % self.update_target_iter == 0:
-            # self.network.set_update_target_dist(True)
-            # self.network.gmm_fitted = False
-            # update_target_dist = True
-            # self.update_target_dist = not self.update_target_dist
-            # self.update_target_dist = not self.update_target_dist
+            self.recalc_targets()
+            # if self.n_iter_not_improved >= 3:
+            #     self.recalc_targets()
 
-            # NOTE
-            # get and set mus/covs from EM on Q
-            for t in range(self.num_components):
-                task_queue = self.network.tap.feature_space_qs[t] 
-                if len(task_queue) < 10:
-                    continue
-                task_queue = torch.vstack(task_queue).detach().cpu().numpy()
-                self.network.gaussian_mixtures[t].fit(task_queue)
-                # set mean, cov
-                momentum = 0.95
-                mu_hat_t = torch.from_numpy(self.network.gaussian_mixtures[t].means_).cuda()
-                sig_hat_t = torch.from_numpy(self.network.gaussian_mixtures[t].covariances_).cuda()
-                self.mus[t] = mu_hat_t #(1 - momentum) * self.mus[t] + (momentum * mu_hat_t)
-                self.sigs[t] = sig_hat_t#(1 - momentum) * self.sigs[t] + (momentum * sig_hat_t)
+            #     self.n_iter_not_improved = 0
 
-            self.network.set_feature_space_distribution_parameters(self.mus, self.sigs)
-
-            # Adjust estimated mus and sigs
-            # """
-            # NOTE maybe: min_dists / 2
-            input_covs = []
-            for cov_comp_set in self.sigs:
-                for cov in cov_comp_set:
-                    input_covs.append(torch.max(torch.real(torch.linalg.eigvals(cov))))
-
-            input_covs = torch.stack(input_covs)
-            tc_inds = [0, 1, 2]
-            input_tc_inds = np.repeat(tc_inds, self.gmm_comps)
-            for e in range(120):
-                self.tap_optimizer.zero_grad()
-                new_mus, new_covs = self.tap(self.mus, input_covs, input_tc_inds)
-                # Construct GaussianMixture
-                new_mus = torch.stack(new_mus).reshape(len(tc_inds), self.gmm_comps, -1)
-                new_covs = torch.stack(new_covs).reshape(len(tc_inds), self.gmm_comps, self.feature_space_dim, self.feature_space_dim)
-                # min D_KL(new_gmm, gmm) s.t. c-sep
-                l = self.main_loss.get_dynamic_sep_loss(new_mus, new_covs, self.min_dists, tc_inds, csep=self.csep) \
-                    + 0.2 * component_wise_kl_div(self.mus, self.sigs, new_mus, new_covs)
-                self.print_to_log_file(f"tap loss: {l}")
-                if self.with_wandb:
-                    wandb.log({"tap_loss": l})
-                self.tap_amp_grad_scaler.scale(l).backward(retain_graph=False)
-                self.tap_amp_grad_scaler.unscale_(self.tap_optimizer)
-                torch.nn.utils.clip_grad_norm_(self.tap.parameters(), 12)
-                self.tap_amp_grad_scaler.step(self.tap_optimizer)
-                self.tap_amp_grad_scaler.update()
-
-            # Measure the adjustment:
-            mean_changes, cov_changes = measure_change(self.mus, self.sigs, new_mus, new_covs)
-            for i, (mean_change, cov_change) in enumerate(zip(mean_changes, cov_changes)):
-                self.print_to_log_file(f"mean[{i}] change: {mean_change}")
-                self.print_to_log_file(f"cov[{i}] change: {cov_change}")
-                if self.with_wandb:
-                    wandb.log({f"mean_change[{i}]": mean_change})
-                    wandb.log({f"cov_change[{i}]": cov_change})
-            
-            self.mus, self.sigs = new_mus.detach(), new_covs.detach()
-
-            self.network.set_feature_space_distribution_parameters(self.mus, self.sigs)
-            # self.network.set_feature_space_distribution_parameters(new_mus, new_covs)
-
-            self.recalc_dist = False
-
-            # """
+            #     self.recalced = True
 
         update_target_dist = self.update_target_dist
         # self.print_to_log_file("epoch, update", self.epoch, update_target_dist)
@@ -548,7 +504,9 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
                 
                 
                 # l = self.loss(output, target) lst_extractions[0], self.mus, self.sigs, lst_tc_inds[0 means, covs, indices, handle_nan=False, return_est_dists=False, with_sep_loss=True)
-                l = self.loss(output, target, features, self.mus, self.sigs, tc_inds, return_est_dists=False, handle_nan=False, with_sep_loss=False)
+                # l = self.loss(output, target, features, self.mus, self.sigs, tc_inds, return_est_dists=False, handle_nan=False, with_sep_loss=False)
+                # l = self.loss.forward_ce_dc(output, target, features, self.mus, self.sigs, tc_inds, return_est_dists=False, handle_nan=False, with_sep_loss=False)
+                l = self.loss.forward_dist_dc_ds(output, target, features, tc_inds, self.mus, self.sigs, return_est_dists=False, handle_nan=False, with_sep_loss=False)
 
                 del data
                 self.print_to_log_file(f"task_id: {task_id}")
@@ -574,12 +532,19 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
 
 
             if do_backprop:
-                self.amp_grad_scaler.scale(l).backward(retain_graph=True) # NOTE
                 # self.amp_grad_scaler.scale(l).backward(retain_graph=False) # NOTE
+                self.amp_grad_scaler.scale(l).backward(retain_graph=True) # NOTE
                 self.amp_grad_scaler.unscale_(self.optimizer)
                 torch.nn.utils.clip_grad_norm_(self.network.parameters(), 12)
                 self.amp_grad_scaler.step(self.optimizer)
                 self.amp_grad_scaler.update()
+                # TAP
+                # if self.epoch > 0:
+                #     self.tap_amp_grad_scaler.scale(l).backward(retain_graph=True)
+
+            else:
+                # self.tap.update_val_queues(features, tc_inds)
+                self.tap.update_val_queues(features[0], tc_inds[0])
 
         else:
             pass
@@ -590,6 +555,197 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
         del target
 
         return l.detach().cpu().numpy()
+
+    def recalc_targets(self):
+        component_optimal_ns = []
+        for t in range(self.num_components):
+            task_queue = self.network.tap.feature_space_qs[t] 
+            val_queue = self.tap.val_feature_space_qs[t] 
+            if len(task_queue) < 10:
+                continue
+            task_queue = torch.vstack(task_queue).detach().cpu().numpy()
+            val_queue = torch.vstack(val_queue).detach().cpu().numpy()
+            # self.network.gaussian_mixtures[t].fit(task_queue)
+            # momentum = 0.999
+            momentum = 0.995
+            # mu_hat_t = torch.from_numpy(self.network.gaussian_mixtures[t].means_).cuda()
+            # sig_hat_t = torch.from_numpy(self.network.gaussian_mixtures[t].covariances_).cuda()
+            curr_num_comps = self.mus[t].shape[0]
+            min_comps, max_comps = max(1, curr_num_comps-1), min(self.max_gmm_comps, curr_num_comps+1)
+            # best_gmm, optimal_n, bics = self.network.find_optimal_components(val_queue, min_components = min_comps, max_components=max_comps)
+            best_gmm, optimal_n, bics = self.network.fit_gmms(val_queue)
+            self.print_to_log_file(f"optimal num components {t}: {optimal_n}")
+            component_optimal_ns.append(optimal_n)
+            if self.with_wandb:
+                wandb.log({f'{t}_opt_n': optimal_n})
+            # best_gmm, _, _  = self.network.find_optimal_components(task_queue, min_components = optimal_n, max_components=optimal_n)
+            best_gmm, _, _  = self.network.fit_gmms(task_queue)
+            mu_hat_t = torch.from_numpy(best_gmm.means_).cuda()
+            sig_hat_t = torch.from_numpy(best_gmm.covariances_).cuda()
+            weights_hat_t = torch.from_numpy(best_gmm.weights_).cuda()
+            new_mus, new_sigs = [], []
+            new_weights = []
+                # also record mixture weights
+                # self.weights[t] = torch.from_numpy(best_gmm.weights_).cuda()
+                # set mean, cov
+                # self.mus[t] = mu_hat_t #(1 - momentum) * self.mus[t] + (momentum * mu_hat_t)
+                # self.sigs[t] = sig_hat_t.detach()#(1 - momentum) * self.sigs[t] + (momentum * sig_hat_t)
+            prev_comp_n = len(self.mus[t])
+                # optimal_n = prev_comp_n
+                # component_optimal_ns.append(prev_comp_n)
+                # self.print_to_log_file(f"prev size: {[m.size() for m in self.mus[t]]}")
+                # for comp_idx in range(self.network.gaussian_mixtures[t].n_components):
+                # for comp_idx in range(optimal_n):
+            for comp_idx in range(self.max_gmm_comps):
+                if comp_idx >= optimal_n:
+                    new_mus.append(torch.zeros(self.feature_space_dim).cuda())
+                    new_sigs.append(torch.zeros(self.feature_space_dim, self.feature_space_dim).cuda())
+                    new_weights.append(torch.ones(1).cuda() / self.max_gmm_comps)
+                elif comp_idx >= prev_comp_n:
+                        # self.print_to_log_file(f"res size {t} {comp_idx}: {torch.mean(self.mus[t], 0).size()}")
+                    new_mus.append((1 - momentum) * torch.mean(self.mus[t], 0) + (momentum * mu_hat_t[comp_idx]))
+                        # new_sigs.append((1 - momentum) * torch.mean(self.sigs[t], 0) + (momentum * sig_hat_t[comp_idx]))
+                    new_sigs.append(sig_hat_t[comp_idx])
+                    new_weights.append((1 - momentum) * torch.mean(self.weights[t], 0) + (momentum * weights_hat_t[comp_idx]))
+                else:
+                        # self.print_to_log_file(f"prev size {t} {comp_idx}: {self.mus[t][comp_idx].size()}")
+                        # self.print_to_log_file(f"new size {t} {comp_idx}: {mu_hat_t[comp_idx].size()}")
+                    new_mus.append((1 - momentum) * self.mus[t][comp_idx] + (momentum * mu_hat_t[comp_idx]))
+                    new_sigs.append(sig_hat_t[comp_idx])
+                        # new_sigs.append((1 - momentum) * self.sigs[t][comp_idx] + (momentum * sig_hat_t[comp_idx]))
+                    # new_weights.append((1 - momentum) * self.weights[t][comp_idx] + (momentum * weights_hat_t[comp_idx]))
+                    new_weights.append(weights_hat_t[comp_idx])
+
+                if self.with_wandb:
+                    wandb.log({
+                        f"em_mu_{t}_{comp_idx}": new_mus[-1], 
+                        f"em_cov_{t}_{comp_idx}": new_sigs[-1], 
+                        f"em_weight_{t}_{comp_idx}": new_weights[-1]
+                    })
+                    self.print_to_log_file(f"em_weight_{t}_{comp_idx}: {new_weights[-1]}")
+
+            self.mus[t] = torch.vstack(new_mus).detach()
+            self.sigs[t] = torch.stack(new_sigs).detach()
+            self.weights[t] = torch.vstack(new_weights).detach().permute(1,0)
+
+            # self.sigs = new_sigs
+            # self.mus = new_mus
+            # for t in range(self.num_components):
+            #     self.print_to_log_file(f"new size {t} : {[m.size() for m in self.mus[t]]}")
+
+        self.loss.main_loss.dist_weights = self.weights
+        
+        # if self.n_iter_not_improved >= 2:
+        if self.n_iter_not_improved >= 0:
+        # if True:
+        # if False:
+
+            self.allocate_targets(component_optimal_ns)
+
+            self.n_iter_not_improved = 0
+
+            self.recalced = True
+        else:
+            # Prune 
+            for c in range(self.num_components):
+                optimal_n = component_optimal_ns[c]
+                self.mus[c] = self.mus[c][:optimal_n]
+                self.sigs[c] = self.sigs[c][:optimal_n]
+                
+            self.network.set_feature_space_distribution_parameters(self.mus, self.sigs)
+            self.network.weights = self.weights
+
+        self.recalc_dist = False
+
+        self.network.construct_feature_space_gmm_implicit()
+
+    def allocate_targets(self, component_optimal_ns):
+        input_covs = []
+        for cov_comp_set in self.sigs:
+            for cov in cov_comp_set:
+                input_covs.append(torch.max(torch.real(torch.linalg.eigvals(cov))))
+
+        input_covs = torch.stack(input_covs)
+        tc_inds = [0, 1, 2]
+            # input_tc_inds = np.repeat(tc_inds, self.gmm_comps)
+        # input_tc_inds = np.repeat(tc_inds, 10)
+        input_tc_inds = [list(range(self.max_gmm_comps)) for t in range(3)]
+        torch.autograd.set_detect_anomaly(True)
+        self.tap_optimizer.zero_grad()
+        for e in range(30):
+            # new_mus, new_covs = self.tap(self.mus, input_covs, input_tc_inds)
+            new_mus, new_covs = self.tap.forward_dedicated(self.mus, input_covs, input_tc_inds)
+                # Prune the unneeded mus
+            pruned_mus, pruned_covs = [], []
+            em_mus, em_covs = [], []
+            for c in range(self.num_components):
+                optimal_n = component_optimal_ns[c]
+                keep_mus = new_mus[c*self.max_gmm_comps:c*self.max_gmm_comps + optimal_n]
+                keep_covs = new_covs[c*self.max_gmm_comps:c*self.max_gmm_comps + optimal_n]
+                pruned_mus.append(torch.vstack(keep_mus).reshape(optimal_n, self.feature_space_dim))
+                pruned_covs.append(torch.stack(keep_covs).reshape(optimal_n, self.feature_space_dim, self.feature_space_dim).double())
+                em_mus.append(self.mus[c][:optimal_n])
+                em_covs.append(self.sigs[c][:optimal_n])
+
+            # l = self.main_loss.get_dynamic_sep_loss(new_mus, new_covs, self.min_dists, tc_inds, csep=self.csep) \
+            # l = self.main_loss.get_non_uniform_dynamic_sep_loss(pruned_mus, pruned_covs, self.min_dists, csep=self.csep) \
+            #         + 1 * component_wise_kl_div(self.mus, self.sigs, pruned_mus, pruned_covs)
+            l = self.main_loss.get_non_uniform_dynamic_sep_loss(pruned_mus, pruned_covs, self.min_dists, csep=self.csep) \
+                    + 1 * component_wise_kl_div(em_mus, em_covs, pruned_mus, pruned_covs)
+            self.print_to_log_file(f"tap loss: {l}")
+            if self.with_wandb:
+                wandb.log({"tap_loss": l})
+            if (e + 1) != 30:
+                self.tap_amp_grad_scaler.scale(l).backward(retain_graph=True)
+                self.tap_amp_grad_scaler.unscale_(self.tap_optimizer)
+                torch.nn.utils.clip_grad_norm_(self.tap.parameters(), 12)
+                self.tap_amp_grad_scaler.step(self.tap_optimizer)
+                self.tap_amp_grad_scaler.update()
+                self.tap_optimizer.zero_grad()
+
+        pruned_mus_, pruned_covs_ = pruned_mus, pruned_covs
+        # pruned_mus_, pruned_covs_ = [], []
+        # for t in range(self.num_components):
+        #     pruned_mus_t = torch.vstack(pruned_mus[t])[:, 0, :]
+        #     pruned_mus_.append(pruned_mus_t)
+        #     pruned_covs_t = torch.stack(pruned_covs[t])
+        #     pruned_covs_.append(pruned_covs_t)
+            # Measure the adjustment:
+            # mean_changes, cov_changes = measure_change(self.mus, self.sigs, new_mus, new_covs)
+        mean_changes, cov_changes = measure_change(self.mus, self.sigs, pruned_mus_, pruned_covs_)
+        for i, (mean_change, cov_change) in enumerate(zip(mean_changes, cov_changes)):
+            self.print_to_log_file(f"mean[{i}] change: {mean_change}")
+            self.print_to_log_file(f"cov[{i}] change: {cov_change}")
+            if self.with_wandb:
+                wandb.log({f"mean_change[{i}]": mean_change})
+                wandb.log({f"cov_change[{i}]": cov_change})
+            
+            # self.mus, self.sigs = new_mus.detach(), new_covs.detach()
+        tap_momentum = 0.999 * (self.epoch / 50)
+        updated_mus, updated_covs = [], []
+        for t in range(self.num_components):
+                # self.mus[t], self.sigs[t] = new_mus[t].detach(), new_covs[t].detach()
+                # self.mus[t] = new_mus[t]
+                # self.mus[t] = (1 - tap_momentum) * self.mus[t][:component_optimal_ns[t]] + (tap_momentum * new_mus[t])
+
+            updated_mu = (1 - tap_momentum) * self.mus[t][:component_optimal_ns[t]] + (tap_momentum * pruned_mus_[t])
+            self.print_to_log_file(f"fin updated mu: {updated_mu}")
+            updated_mus.append(updated_mu)
+                # self.mus[t] = (1 - tap_momentum) * self.mus[t] + (tap_momentum * pruned_mus[t])
+                # self.sigs[t] = new_covs[t]
+                # self.sigs[t] = (1 - tap_momentum) * self.sigs[t][:component_optimal_ns[t]] + (tap_momentum * new_covs[t])
+            updated_cov = (1 - tap_momentum) * self.sigs[t][:component_optimal_ns[t]] + (tap_momentum * pruned_covs_[t])
+            self.print_to_log_file(f"fin updated cov: {updated_cov}")
+            if not is_positive_definite(updated_cov):
+                updated_cov = self.sigs[t][:component_optimal_ns[t]]
+            updated_covs.append(updated_cov)
+                # self.sigs[t] = (1 - tap_momentum) * self.sigs[t] + (tap_momentum * pruned_covs[t])
+
+        self.mus, self.sigs = updated_mus, updated_covs
+        self.network.set_feature_space_distribution_parameters(updated_mus, updated_covs)
+        self.network.weights = self.weights
+
+        self.network.construct_feature_space_gmm_implicit()
 
 
     def get_basic_generators(self):
@@ -947,8 +1103,6 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
         return torch.from_numpy(np.array(points))
 
 
-
-
     def optimal_sep(self, N, d):
 
         class OptimumSep(nn.Module):
@@ -1043,21 +1197,27 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
         centers = torch.from_numpy(np.vstack(centers))
         return centers
 
-    def init_gmm_centers(self, centers, dim, ms, c):
+    def init_gmm_centers(self, centers, dim, ms, c, return_weights=False):
         K = self.gmm_comps
         N = len(centers)
+        s = 5
         all_comp_centers = [[] for _ in range(N)]
         all_comp_centers_torch = [torch.empty(K, dim) for _ in range(N)]
         all_comp_covs_torch = [torch.empty(K, dim, dim) for _ in range(N)]
+        weights = [torch.ones(K, 1) / K for _ in range(N)]
         for i, center in enumerate(centers):
             m = ms[i]
             for k in range(K):
                 comp_cov = (np.power(m/(2*c), 2) / dim) * torch.eye(dim) + (1e-05*torch.eye(dim))
+                comp_cov = (np.power((m * s / c), 2) / dim) * torch.eye(dim) + (1e-05*torch.eye(dim))
                 all_comp_covs_torch[i][k, :] = comp_cov
                 comp_center = np.random.uniform(center-(m/2), center+(m/2))
                 all_comp_centers_torch[i][k] = torch.from_numpy(comp_center)
 
-        return torch.stack(all_comp_centers_torch), torch.stack(all_comp_covs_torch)
+        # return torch.stack(all_comp_centers_torch), torch.stack(all_comp_covs_torch)
+        if return_weights:
+            return all_comp_centers_torch, all_comp_covs_torch, weights
+        return all_comp_centers_torch, all_comp_covs_torch
 
 
         # dists = []
@@ -1076,4 +1236,82 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
         # comp_gmm = GaussianMixtureModel(weights, dists)
 
 
-        
+    def init_from_fixed(self):
+        mus = [torch.Tensor([[-0.5395, -0.0668,  0.0751],
+        [-0.4004, -0.0370,  0.2684],
+        [-0.5072, -0.1627,  0.3345],
+        [-0.4651,  0.0898,  0.3048],
+        [-0.1087,  0.1977,  0.2530]]), torch.Tensor([[ 0.9034, -0.6443,  0.8015],
+        [ 0.8188, -0.6842,  0.6880],
+        [ 0.7842, -0.4100,  0.7769],
+        [ 0.5642, -0.5596,  0.8316],
+        [ 0.6712, -0.6173,  0.9445]]), torch.Tensor([[-0.8129, -0.9852, -0.2697],
+        [-1.1029, -0.8532, -0.2032],
+        [-1.1436, -1.2126, -0.2086],
+        [-0.8065, -0.8981, -0.3438],
+        [-1.1126, -0.8964, -0.1714]])] 
+
+        sigs = [torch.Tensor([[[0.0083, 0.0000, 0.0000],
+            [0.0000, 0.0083, 0.0000],
+            [0.0000, 0.0000, 0.0083]],
+
+            [[0.0083, 0.0000, 0.0000],
+            [0.0000, 0.0083, 0.0000],
+            [0.0000, 0.0000, 0.0083]],
+
+            [[0.0083, 0.0000, 0.0000],
+            [0.0000, 0.0083, 0.0000],
+            [0.0000, 0.0000, 0.0083]],
+
+            [[0.0083, 0.0000, 0.0000],
+            [0.0000, 0.0083, 0.0000],
+            [0.0000, 0.0000, 0.0083]],
+
+            [[0.0083, 0.0000, 0.0000],
+            [0.0000, 0.0083, 0.0000],
+            [0.0000, 0.0000, 0.0083]]]), torch.Tensor([[[0.0083, 0.0000, 0.0000],
+            [0.0000, 0.0083, 0.0000],
+            [0.0000, 0.0000, 0.0083]],
+
+            [[0.0083, 0.0000, 0.0000],
+            [0.0000, 0.0083, 0.0000],
+            [0.0000, 0.0000, 0.0083]],
+
+            [[0.0083, 0.0000, 0.0000],
+            [0.0000, 0.0083, 0.0000],
+            [0.0000, 0.0000, 0.0083]],
+
+            [[0.0083, 0.0000, 0.0000],
+            [0.0000, 0.0083, 0.0000],
+            [0.0000, 0.0000, 0.0083]],
+
+            [[0.0083, 0.0000, 0.0000],
+            [0.0000, 0.0083, 0.0000],
+            [0.0000, 0.0000, 0.0083]]]), torch.Tensor([[[0.0083, 0.0000, 0.0000],
+            [0.0000, 0.0083, 0.0000],
+            [0.0000, 0.0000, 0.0083]],
+
+            [[0.0083, 0.0000, 0.0000],
+            [0.0000, 0.0083, 0.0000],
+            [0.0000, 0.0000, 0.0083]],
+
+            [[0.0083, 0.0000, 0.0000],
+            [0.0000, 0.0083, 0.0000],
+            [0.0000, 0.0000, 0.0083]],
+
+            [[0.0083, 0.0000, 0.0000],
+            [0.0000, 0.0083, 0.0000],
+            [0.0000, 0.0000, 0.0083]],
+
+            [[0.0083, 0.0000, 0.0000],
+            [0.0000, 0.0083, 0.0000],
+            [0.0000, 0.0000, 0.0083]]])] 
+
+        return mus, sigs
+
+    def init_uniform_mixture_weights(self):
+        weights = []
+        for _ in range(self.num_components):
+            weights.append(torch.ones(self.gmm_comps)/(self.gmm_comps))
+
+        return weights

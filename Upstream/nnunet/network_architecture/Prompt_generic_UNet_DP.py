@@ -10,6 +10,7 @@ from nnunet.network_architecture.neural_network import SegmentationNetwork
 from copy import deepcopy
 from torch.distributions import MultivariateNormal, Categorical
 from sklearn.mixture._gaussian_mixture import GaussianMixture
+from sklearn.mixture import BayesianGaussianMixture
 from nnunet.utilities.gmm import GaussianMixtureModel
 import copy
 
@@ -468,10 +469,10 @@ class UniSeg_model(Generic_UNet):
             ))
 
         for ds in range(len(self.conv_blocks_localization)):
-            self.seg_outputs.append(conv_op(self.conv_blocks_localization[ds][-1].output_channels, num_classes,
-                                            1, 1, 0, 1, 1, seg_output_use_bias))
-            # self.seg_outputs.append(conv_op(self.conv_blocks_localization[ds][-1].output_channels, feature_space_dim,
+            # self.seg_outputs.append(conv_op(self.conv_blocks_localization[ds][-1].output_channels, num_classes,
             #                                 1, 1, 0, 1, 1, seg_output_use_bias))
+            self.seg_outputs.append(conv_op(self.conv_blocks_localization[ds][-1].output_channels, feature_space_dim,
+                                            1, 1, 0, 1, 1, seg_output_use_bias))
 
         self.upscale_logits_ops = []
         cum_upsample = np.cumprod(np.vstack(pool_op_kernel_sizes), axis=0)[::-1]
@@ -891,7 +892,6 @@ class TAPFeatureExtractor_DP(UniSeg_model):
         self.feature_space_dim = feature_space_dim
         self.gmm_comps = gmm_comps
         
-
         # self.do_ds = True
 
         self.queue_min = 1
@@ -902,6 +902,27 @@ class TAPFeatureExtractor_DP(UniSeg_model):
         self.class_lst_to_std_mapping = class_lst_to_std_mapping
         self.task_id_class_lst_mapping = task_id_class_lst_mapping
         self.with_wandb = with_wandb
+
+    def fit_gmms(self, X, **kwargs):
+        gmm = BayesianGaussianMixture(n_components=10)
+        # gmm = BayesianGaussianMixture(n_components=5)
+        gmm.fit(X)
+
+        return gmm, 10, []
+
+    def find_optimal_components(self, X, min_components=1, max_components=10):
+        bics = []
+        best_gmm = None
+        lowest_bic = np.inf
+        for n in range(min_components, max_components+1):
+            gmm = GaussianMixture(n_components=n)
+            gmm.fit(X)
+            if gmm.bic(X) < lowest_bic:
+                best_gmm = gmm
+            bics.append(gmm.bic(X))
+        
+        optimal_n = np.argmin(bics) + min_components
+        return best_gmm, optimal_n, bics
 
     def set_feature_space_distribution_parameters(self, mus, covs):
         
@@ -954,7 +975,8 @@ class TAPFeatureExtractor_DP(UniSeg_model):
         seg = self.full_segment(features[0], task_id)
         features[0] = seg
         
-        return features, lst_gt_extractions[0], tc_inds
+        # return features, lst_gt_extractions[0], tc_inds
+        return features, lst_gt_extractions, tc_inds
 
     def forward_inference(self, x, task_id=None, gt_seg=None, target_classes=None, **kwargs):
         features, _, _, tp_feats, _ = super().forward(x, task_id, get_prompt=True)
@@ -1005,7 +1027,8 @@ class TAPFeatureExtractor_DP(UniSeg_model):
         # pick random element from extraction 
         self.tap.update_queues(lst_extractions[0], lst_tc_inds[0])
 
-        return lst_tc_inds[0]
+        # return lst_tc_inds[0]
+        return lst_tc_inds
 
     def init_gmms(self, means, covs):
         # means, covs = self.dynamic_dist.get_mean_var()
@@ -1129,13 +1152,40 @@ class TAPFeatureExtractor_DP(UniSeg_model):
 
         return dist
 
+    def construct_feature_space_gmm_implicit(self):
+        component_distributions = []
+        for i in range(self.num_tasks):
+            mu, cov = self.mus[i], self.covs[i]
+            if mu.shape[0] == 1:
+                dist =  MultivariateNormal(mu, cov)
+                component_distributions.append(dist)
+                continue
+
+            comp_dists = []
+            for t in range(mu.shape[0]):
+                
+                comp_dists.append(MultivariateNormal(mu[t], cov[t]))
+
+            # categorical = Categorical(torch.ones(mu.shape[0], device=mu.device) / mu.shape[0])
+            categorical = Categorical(self.weights[i])
+
+            # self.feature_space_gmm = GaussianMixtureModel(categorical, comp_dists)
+            dist = GaussianMixtureModel(categorical, comp_dists)
+            component_distributions.append(dist)
+
+        # categorical = Categorical(torch.ones(self.num_tasks, device=mus.device) / self.num_tasks)
+        categorical = Categorical(torch.ones(self.num_tasks, device=self.mus[0].device) / self.num_tasks)
+        self.feature_space_gmm = GaussianMixtureModel(categorical, component_distributions)
+
+
     def construct_feature_space_gmm(self, mus, covs):
         component_distributions = []
         for i in range(self.num_tasks):
             mu, cov = mus[i], covs[i]
             component_distributions.append(self.construct_torch_gmm(mu, cov))
 
-        categorical = Categorical(torch.ones(self.num_tasks, device=mus.device) / self.num_tasks)
+        # categorical = Categorical(torch.ones(self.num_tasks, device=mus.device) / self.num_tasks)
+        categorical = Categorical(torch.ones(self.num_tasks, device=mus[0].device) / self.num_tasks)
         self.feature_space_gmm = GaussianMixtureModel(categorical, component_distributions)
 
     def forward(self, x, task_id=None, for_loss=False, uniseg_only=False, **kwargs):

@@ -113,22 +113,43 @@ def kl_divs(dists, target_means, target_covs):
 
     return kls
 
-def component_wise_kl_div(means, covs, means_pred, covs_pred):
+def component_wise_kl_div(means, covs, means_pred, covs_pred, optimal_component_ns=None):
 
     total_kl_div = 0
-    for p in range(means_pred.shape[0]):
+    # for p in range(means_pred.shape[0]):
+    for p in range(len(means_pred)):
+        if optimal_component_ns is not None:
+            optimal_n = optimal_component_ns[p]
+        else:
+            optimal_n = None
+
         means_p = means_pred[p]
         for c, mean_c in enumerate(means_p):
-            cov_c = covs_pred[p, c]
+            if optimal_n is not None and c > optimal_n:
+                break
+            # cov_c = covs_pred[p, c]
+            cov_c = covs_pred[p][c]
+
+            if not is_positive_definite(cov_c):
+                total_kl_div = total_kl_div + 100*torch.sum(torch.square(torch.zeros_like(cov_c) - cov_c))
+                continue
             
             pred_dist = MultivariateNormal(mean_c, cov_c)
-            dist = MultivariateNormal(means[p, c], covs[p, c])
+            # dist = MultivariateNormal(means[p, c], covs[p, c])
+            dist = MultivariateNormal(means[p][c], covs[p][c])
 
             l = kl_divergence(dist, pred_dist)
 
             total_kl_div = total_kl_div + l
             
     return total_kl_div
+
+def is_positive_definite(mat):
+    try:
+        _ = torch.linalg.cholesky(mat)
+        return True
+    except RuntimeError:
+        return False
 
 
 def matrix_logm(A):
@@ -189,13 +210,15 @@ def measure_change(means, covs, new_means, new_covs):
 
     mean_changes = []
     cov_changes = []
-    for p in range(new_means.shape[0]):
+    # for p in range(new_means.shape[0]):
+    for p in range(len(new_means)):
         means_p = new_means[p]
         for c, mean_c in enumerate(means_p):
-            cov_c = new_covs[p, c]
+            # cov_c = new_covs[p, c]
+            cov_c = new_covs[p][c]
 
-            mean_changes.append(torch.norm(means[p, c] - mean_c, 2))
-            cov_changes.append(riemannian_distance(covs[p, c], cov_c))
+            mean_changes.append(torch.norm(means[p][c] - mean_c, 2))
+            cov_changes.append(riemannian_distance(covs[p][c], cov_c))
 
     return mean_changes, cov_changes
 

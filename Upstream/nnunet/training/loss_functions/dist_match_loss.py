@@ -33,9 +33,11 @@ class DynamicDistMatchingLoss(nn.Module):
             num_nan = pred_dist_samples.isnan().count_nonzero().item()
             assert num_nan == 0, f"NaN values [{num_nan}] in predicted distribution."
             
+            self.curr_comp = task_label
             target_ll = self.multi_var_gnlll(pred_dist_samples, means[task_label], covs[task_label]) # already -log(.)
             total_ll = 1e-08
             for j in list(range(3)):
+                self.curr_comp = j
                 if j != i:
                     comp_nlp = self.multi_var_gnlll(pred_dist_samples, means[j], covs[j])
                     total_ll = total_ll + torch.exp(-comp_nlp)
@@ -101,7 +103,9 @@ class DynamicDistMatchingLoss(nn.Module):
                 # component_distributions.append(construct_torch_gmm(mu, cov))
                 component_distributions.append(MultivariateNormal(mu, cov))
 
-            categorical = Categorical(torch.ones(N, device=mus.device) / N)
+            # categorical = Categorical(torch.ones(N, device=mus.device) / N)
+            # categorical = Categorical(torch.ones(N, device=mus[0].device) / N)
+            categorical = Categorical(self.dist_weights[self.curr_comp])
             return GaussianMixtureModel(categorical, component_distributions)
 
         return construct_feature_space_gmm(means, covs, means.shape[0])
@@ -272,6 +276,33 @@ class DynamicDistMatchingLoss(nn.Module):
 
 
         return total_loss
+
+    def get_non_uniform_dynamic_sep_loss(self, means_pred, covs_pred, min_dists, csep=2):
+        total_loss = 0 # torch.tensor([0])
+        for p in range(len(means_pred)):
+            means_p = means_pred[p]
+            for c, mean_c in enumerate(means_p):
+                cov_c = covs_pred[p][c]
+                cov_c_eval = torch.max(torch.real(torch.linalg.eigvals(cov_c))) # should always be real, since cov is pos-def
+                for q in range(p + 1, len(means_pred)):
+                    means_q = means_pred[q]
+                    for k, mean_k in enumerate(means_q):
+                        cov_k = covs_pred[q][k]
+                        cov_k_eval = torch.max(torch.real(torch.linalg.eigvals(cov_k)))
+
+                        pred_min_dist = torch.sqrt(csep * torch.max(cov_c_eval, cov_k_eval)) * len(means_pred)
+                        m = np.min((pred_min_dist.detach().cpu().numpy(), max(min_dists[p], min_dists[q])))
+                        
+                        if m < 1e-06:
+                            continue
+
+                        dist = torch.norm(mean_c - mean_k, 2)
+                        if (dist - m) + 1e-06 < 0:
+                            total_loss = total_loss + (1 - (dist/m))
+
+
+        return total_loss
+
 
     
     def get_sep_loss(self, means):
