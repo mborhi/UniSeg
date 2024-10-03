@@ -19,12 +19,13 @@ from nnunet.utilities.sep import extract_task_set
 import wandb
 
 class TAP(nn.Module):
-    def __init__(self, feature_space_dim, num_components, momentum, queue_size=5000, gmm_comps = 1):
+    def __init__(self, feature_space_dim, num_components, num_tasks, momentum, queue_size=5000, val_q_size=2500, gmm_comps = 1):
         super(TAP, self).__init__()
         self.feature_space_dim = feature_space_dim 
         self.num_components = num_components 
         self.prompt_out_channel = 1
         self.gmm_comps = gmm_comps
+        self.num_tasks = num_tasks
 
         # self.acc_mus = [[] for _ in range(num_components)]
         # self.acc_covs = [[] for _ in range(num_components)]
@@ -32,11 +33,15 @@ class TAP(nn.Module):
         hidden_dim = 1000
 
         self.mu_mods = nn.ModuleList([
-            self.create_mod(feature_space_dim, gmm_comps) for _ in range(num_components)
+            # self.create_mod(feature_space_dim, gmm_comps) for _ in range(num_components)
+            # self.create_mod_(feature_space_dim, gmm_comps) for _ in range(num_components)
+            self.create_mod_list(feature_space_dim, gmm_comps) for _ in range(num_components)
         ])
 
         self.sig_mods = nn.ModuleList([
-            self.create_mod(feature_space_dim, gmm_comps) for _ in range(num_components)
+            # self.create_mod(feature_space_dim, gmm_comps) for _ in range(num_components)
+            # self.create_mod_(feature_space_dim, gmm_comps) for _ in range(num_components)
+            self.create_mod_list(feature_space_dim, gmm_comps) for _ in range(num_components)
         ])
         
         self.task_mu_modules = nn.ModuleList([
@@ -75,9 +80,18 @@ class TAP(nn.Module):
         self.momentum = 0.999
 
         self.queue_size = queue_size
+        self.val_queue_size = val_q_size
         self.feature_space_qs = [[] for i in range(num_components)]
         self.val_feature_space_qs = [[] for i in range(num_components)]
         self.best_feature_space_qs = None
+
+        self.tasks_feature_space_qs = [
+            [[] for i in range(num_components)] for _ in range(num_tasks)
+        ]
+
+        self.tasks_val_feature_space_qs = [
+            [[] for i in range(num_components)] for _ in range(num_tasks)
+        ]
 
     def create_mod(self, feature_space_dim, gmm_comps):
         mod = nn.ModuleList([
@@ -101,12 +115,12 @@ class TAP(nn.Module):
         mod = nn.ModuleList([
             nn.Sequential(
                 # eig(\Sigma_tc) + \mu_tc + t + c
-                nn.Linear(feature_space_dim + feature_space_dim + 1 + 1, 1024), 
-                # nn.Linear((feature_space_dim * (num_components*10)) + (1 * (num_components*10)) + 1, 1024), 
+                nn.Linear(feature_space_dim + feature_space_dim + 1 + 1, 256), 
+                # nn.Linear((feature_space_dim * (num_components*10)) + (1 * (num_components*10)) + 1, 256), 
                 nn.PReLU(), 
-                nn.Linear(1024, 512),
+                nn.Linear(256, 128),
                 nn.PReLU(), 
-                nn.Linear(512, feature_space_dim),
+                nn.Linear(128, feature_space_dim),
                 nn.Tanh(), 
             )
             for t in range(gmm_comps)
@@ -114,29 +128,67 @@ class TAP(nn.Module):
         ])
 
         return mod
+    
+    def create_mod_list(self, feature_space_dim, gmm_comps):
+        mod = nn.ModuleList([
+            nn.ModuleList([
+                # eig(\Sigma_tc) + \mu_tc + t + c
+                nn.Linear(feature_space_dim + feature_space_dim + 1 + 1, 256), 
+                # nn.Linear((feature_space_dim * (num_components*10)) + (1 * (num_components*10)) + 1, 256), 
+                nn.PReLU(), 
+                nn.Linear(256, 128),
+                nn.PReLU(), 
+                nn.Linear(128, feature_space_dim),
+                nn.Tanh(), 
+            ])
+            for t in range(gmm_comps)
+            # for t in range(1)
+        ])
 
-    def update_generic_queue(self, feature_extracts, tc_inds, queue):
-        update_size = 100
+        return mod
+
+    def f(self, x, modlist):
+        # https://discuss.pytorch.org/t/runtimeerror-one-of-the-variables-needed-for-gradient-computation-has-been-modified-by-an-inplace-operation-torch-floattensor-64-1-which-is-output-0-of-asstridedbackward0-is-at-version-3-expected-version-2-instead-hint-the-backtrace-further-a/171826/7
+        for mod in modlist:
+            if isinstance(mod, nn.Linear):
+                x = F.linear(x, mod.weight.clone())
+            elif isinstance(mod, nn.PReLU):
+                x = F.prelu(x, mod.weight.clone())
+            else:
+                x = mod(x)
+
+        return x
+
+    def update_generic_queue(self, feature_extracts, tc_inds, queue, max_size, update_size=100):
         for i, task_id in enumerate(tc_inds):
             idxs = torch.randint(0, feature_extracts[i].shape[-1], (update_size,))
             feature_extracts_ = feature_extracts[i].detach().clone().to(device=feature_extracts[i].device)
+            # print(f"feat extracts: {feature_extracts_.shape}")
             rand_elements = feature_extracts_[:, idxs]
             rand_elements = rand_elements.reshape(-1, self.feature_space_dim)
             
             # Enqueue and Dequeue
             current_queue_size = len(queue[task_id])
-            if current_queue_size + update_size > self.queue_size:
-                excess_size = current_queue_size + update_size - self.queue_size
+            if current_queue_size + update_size > max_size:
+                excess_size = current_queue_size + update_size - max_size
                 queue[task_id] = queue[task_id][excess_size:]
             
             queue[task_id].extend(rand_elements)
 
-    def update_queues(self, feature_extracts, tc_inds):
-        self.update_generic_queue(feature_extracts, tc_inds, self.feature_space_qs)
+    def update_queues(self, feature_extracts, tc_inds, update_size=100):
+        self.update_generic_queue(feature_extracts, tc_inds, self.feature_space_qs, self.queue_size, update_size=update_size)
 
-    def update_val_queues(self, feature_extracts, tc_inds):
-        self.update_generic_queue(feature_extracts, tc_inds, self.val_feature_space_qs)
+    def update_val_queues(self, feature_extracts, tc_inds, update_size=100):
+        self.update_generic_queue(feature_extracts, tc_inds, self.val_feature_space_qs, self.val_queue_size, update_size=update_size)
     
+    def update_task_queue(self, task_id, feature_extracts, tc_inds, update_size=100):
+        self.update_generic_queue(feature_extracts, tc_inds, self.tasks_feature_space_qs[task_id], self.queue_size, update_size=update_size)
+    
+    def update_task_val_queue(self, task_id, feature_extracts, tc_inds, update_size=100):
+        self.update_generic_queue(feature_extracts, tc_inds, self.tasks_val_feature_space_qs[task_id], self.val_queue_size, update_size=update_size)
+
+
+
     def clear_queues(self):
 
         for i in range(self.num_components):
@@ -150,7 +202,7 @@ class TAP(nn.Module):
 
         self.feature_space_qs = self.best_feature_space_qs
 
-    def forward_dedicated(self, means, vars, tc_inds, with_momentum_update=True):
+    def forward_dedicated(self, means, vars, tc_inds, with_update=True):
 
         sigma_hats = []
         # mu_hats = [m for m in means]
@@ -170,30 +222,33 @@ class TAP(nn.Module):
                     means = torch.stack(means)
                 
                 input_means = means[t][c].reshape(-1)[None, :]#.repeat(x.size(0), 1).detach().to(device=x.device)
+                input_vars = vars[t][c].reshape(-1)[None, :]
 
-                # input_vars = vars[t][c][None, :]
-                # input_vars = vars[self.gmm_comps * t + c]#[None, :]
-                input_vars = vars[self.gmm_comps * t + c]#[None, :]
-                input_vars = input_vars.unsqueeze(0)[None, :]
-                # input_vars = vars[self.gmm_comps * t + c][None, :]
-                
                 # input = torch.cat((input_means, input_vars, task_id), -1).to(dtype=torch.float16)
-                input = torch.cat((input_means, input_vars, task_id, comp_idx), -1).to(dtype=torch.float32)
-                mu_hat_t_c = torch.mean(self.mu_mods[t][c](input), dim=0) # averaged along batch
-                sigma_hat_t_c = torch.mean(self.sig_mods[t][c](input), dim=0) # averaged along batch
+                input = torch.cat((input_means, input_vars, task_id, comp_idx), -1).to(dtype=torch.float32).detach().clone()
+                # mu_hat_t_c = torch.mean(self.mu_mods[t][c](input), dim=0) # averaged along batch
+                mu_hat_t_c = torch.mean(self.f(input, self.mu_mods[t][c]), dim=0) # averaged along batch
+                # sigma_hat_t_c = torch.mean(self.sig_mods[t][c](input), dim=0) # averaged along batch
+                sigma_hat_t_c = torch.mean(self.f(input, self.sig_mods[t][c]), dim=0) # averaged along batch
+                # sigma_hat_t_c = self.sig_mods[t][c](input)
                 # mu_hat_t_c = torch.mean(self.task_mu_modules[0](input), dim=0) # averaged along batch
 
-                if with_momentum_update:
+                if with_update:
 
                     updated_mean_t_c = (1 - self.momentum) *  means[t][c] + (self.momentum * mu_hat_t_c)
-                    updated_var_t_c = (1 - self.momentum) * vars[self.gmm_comps * t + c] + (self.momentum * sigma_hat_t_c) + 0.0001 # for numerical stability
+                    # updated_var_t_c = (1 - self.momentum) * vars[self.gmm_comps * t + c] + (self.momentum * sigma_hat_t_c) + 0.0001 # for numerical stability
+                    updated_var_t_c = (1 - self.momentum) * vars[t][c] + (self.momentum * sigma_hat_t_c) + 0.0001 # for numerical stability
 
+                    updated_mean_t_c = means[t][c] + mu_hat_t_c
                     mu_hats.append(updated_mean_t_c) 
-                    sigma_hats.append(updated_var_t_c * torch.eye(self.feature_space_dim, device=updated_var_t_c.device))
-                
 
-        # return means, vars
-        # return means, sigma_hats
+                    updated_var_t_c = vars[t][c] + sigma_hat_t_c + 1e-04
+                    sigma_hats.append(updated_var_t_c)
+                else :
+                    # torch.diag(updated_var_t_c)
+                    mu_hats.append(mu_hat_t_c)
+                    sigma_hats.append(sigma_hat_t_c)
+                
         return mu_hats, sigma_hats
 
 

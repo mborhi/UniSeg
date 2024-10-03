@@ -15,6 +15,7 @@
 
 from torch import nn
 import torch.nn.functional as F
+from nnunet.training.loss_functions.crossentropy import RobustCrossEntropyLoss
 
 
 class MultipleOutputLoss2(nn.Module):
@@ -56,6 +57,8 @@ class MixedDSLoss(nn.Module):
         self.main_loss = main_loss
         self.ds_loss = ds_loss
         self.dice_loss = dice_loss
+        # self.ce_loss = RobustCrossEntropyLoss(**{"ignore_index": 0})
+        self.ce_loss = RobustCrossEntropyLoss(**{})
 
     def forward(self, outputs, targets, *args, **kwargs):
         assert isinstance(outputs, (tuple, list)), "x must be either tuple or list"
@@ -83,6 +86,28 @@ class MixedDSLoss(nn.Module):
             return l, est_dists
         return l
 
+    def forward_ce_dc_ds(self, outputs, targets, output_probs):
+        assert isinstance(outputs, (tuple, list)), "x must be either tuple or list"
+        assert isinstance(targets, (tuple, list)), "y must be either tuple or list"
+
+        depth = len(outputs)
+        if self.weight_factors is None:
+            weights = [1] * len(depth)
+        else:
+            weights = self.weight_factors
+
+        # main_l = self.main_loss(features[0], mus, sigs, lst_tc_inds[0], **kwargs)
+        dc_l = self.dice_loss(outputs[0], targets[0])
+        ce_l = self.ce_loss(output_probs[0], targets[0])
+
+        l = weights[0] * (ce_l + dc_l)
+        for i in range(1, depth):
+            if weights[i] != 0:
+                ce_l = self.ce_loss(output_probs[i], targets[i])
+                l += weights[i] * (ce_l + self.dice_loss(outputs[i], targets[i]))
+        
+        return l
+    
     def forward_dist_dc_ds(self, outputs, targets, features, lst_tc_inds, mus, sigs, **kwargs):
     # def forward_dist_dc_ds(self, outputs, targets, features, *args, **kwargs):
         assert isinstance(outputs, (tuple, list)), "x must be either tuple or list"
@@ -98,6 +123,7 @@ class MixedDSLoss(nn.Module):
         dc_l = self.dice_loss(outputs[0], targets[0])
         if "return_est_dists" in kwargs and kwargs["return_est_dists"]:
             main_l, est_dists = main_l
+        # l = weights[0] * (main_l + 2*dc_l)
         l = weights[0] * (main_l + dc_l)
         for i in range(1, depth):
             if weights[i] != 0:
@@ -105,6 +131,7 @@ class MixedDSLoss(nn.Module):
                 ce_l = self.main_loss(features[i], mus, sigs, lst_tc_inds[i], **kwargs)
                 if "return_est_dists" in kwargs and kwargs["return_est_dists"]:
                     ce_l, _  = ce_l
+                # l += weights[i] * (ce_l + 2*self.dice_loss(outputs[i], targets[i]))
                 l += weights[i] * (ce_l + self.dice_loss(outputs[i], targets[i]))
         if "return_est_dists" in kwargs and kwargs["return_est_dists"]:
             return l, est_dists

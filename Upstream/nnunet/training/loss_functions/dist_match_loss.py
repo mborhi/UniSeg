@@ -9,7 +9,7 @@ from nnunet.utilities.gmm import GaussianMixtureModel
 
 class DynamicDistMatchingLoss(nn.Module):
 
-    def __init__(self, min_dist, loss_type="kl", with_wandb=False, cuda_id = -1) -> None:
+    def __init__(self, min_dist, loss_type="kl", do_bg=False, with_wandb=False, cuda_id = -1) -> None:
         super().__init__()
 
         self.cuda_id = cuda_id
@@ -20,32 +20,47 @@ class DynamicDistMatchingLoss(nn.Module):
         self.margin = torch.tensor(0.01)
         self.class_weights = [1, 1, 1, 1]
         self.loss_type = loss_type
+        self.do_bg = do_bg
 
         self.with_wandb = with_wandb
 
     def forward_multi_var_gnlll(self, pred_dists, means, covs, indices, handle_nan=False, return_est_dists=False, with_sep_loss=True):
         if return_est_dists: est_dists, est_means = [], []
         total_gnlll = 0
+        print(f"input indices: {indices}")
         # for i, pred_dist_samples in enumerate(pred_dists):
-        for i, task_label in enumerate(indices):
+        cnt = 0
+        for i, class_index in enumerate(indices):
+            if class_index == 0 and not self.do_bg:
+                continue 
+            
             pred_dist_samples = pred_dists[i].to(dtype=torch.float64)
             
             num_nan = pred_dist_samples.isnan().count_nonzero().item()
             assert num_nan == 0, f"NaN values [{num_nan}] in predicted distribution."
             
-            self.curr_comp = task_label
-            target_ll = self.multi_var_gnlll(pred_dist_samples, means[task_label], covs[task_label]) # already -log(.)
+            self.curr_comp = class_index
+            # NOTE current NOT negative ll, it is POSITIVE ll
+            target_ll = self.multi_var_gnlll(pred_dist_samples, means[class_index], covs[class_index]) # already -log(.)
             total_ll = 1e-08
-            for j in list(range(3)):
-                self.curr_comp = j
-                if j != i:
-                    comp_nlp = self.multi_var_gnlll(pred_dist_samples, means[j], covs[j])
-                    total_ll = total_ll + torch.exp(-comp_nlp)
+            for j, class_sub_index in enumerate(indices):
+                # self.curr_comp = j
+                # if j != i:
+                self.curr_comp = class_sub_index
+                if class_sub_index != class_index:
+                    # comp_nlp = self.multi_var_gnlll(pred_dist_samples, means[j], covs[j])
+                    # total_ll = total_ll + torch.exp(-comp_nlp) # NOTE
+                    comp_lp = self.multi_var_gnlll(pred_dist_samples, means[j], covs[j]) # POSITIVE
+                    total_ll = total_ll + torch.exp(comp_lp)
             # l = -torch.mean(target_ll - torch.log(total_ll))
             # l = -torch.mean(target_ll - torch.square(torch.log(total_ll))) # could be 2*log(...)
-            l = torch.mean(target_ll + torch.log(total_ll + torch.exp(-target_ll)))
+            # l = torch.mean(target_ll + torch.log(total_ll + torch.exp(-target_ll))) # NOTE
+            l = -torch.mean(target_ll - torch.log(total_ll + torch.exp(target_ll)))
+            # log(target_prob / total_prob) = log(target_prob) - log(total_prob)
 
             total_gnlll = total_gnlll + self.class_weights[i] * l
+
+            cnt += 1
 
             if return_est_dists: 
                 
@@ -72,7 +87,14 @@ class DynamicDistMatchingLoss(nn.Module):
         
         if return_est_dists:
             return total_gnlll, est_dists
+
+        # NOTE mean reduction over classes
+        if cnt == 0:
+            return 0 
         
+        total_gnlll = total_gnlll / cnt
+        
+        # return total_gnlll # NOTE
         return total_gnlll
 
     def construct_gmm(self, means, covs):
@@ -115,14 +137,16 @@ class DynamicDistMatchingLoss(nn.Module):
         if len(mean.shape) > 1:
 
             gmm = self.construct_gmm(mean, cov)
-            return -gmm.log_prob(value)
+            # return -gmm.log_prob(value) # NOTE
+            return gmm.log_prob(value) # NOTE
 
 
         _unbroadcasted_scale_tril = torch.linalg.cholesky(cov)
         diff = value - mean
         M = _batch_mahalanobis(_unbroadcasted_scale_tril, diff)
         half_log_det = _unbroadcasted_scale_tril.diagonal(dim1=-2, dim2=-1).log().sum(-1)
-        return -0.5 * (mean.shape[0] * np.log(2 * np.pi) + M) - half_log_det
+        # return -0.5 * (mean.shape[0] * np.log(2 * np.pi) + M) - half_log_det
+        return 0.5 * (mean.shape[0] * np.log(2 * np.pi) + M) - half_log_det
         
 
     # TODO optimize
@@ -298,7 +322,8 @@ class DynamicDistMatchingLoss(nn.Module):
 
                         dist = torch.norm(mean_c - mean_k, 2)
                         if (dist - m) + 1e-06 < 0:
-                            total_loss = total_loss + (1 - (dist/m))
+                            # total_loss = total_loss + (1 - (dist/m))
+                            total_loss = total_loss + torch.float_power(1 - (dist/m), 1/2)
 
 
         return total_loss

@@ -7,6 +7,7 @@ import torch.nn.functional as F
 from nnunet.network_architecture.generic_UNet import ConvDropoutNormNonlin, StackedConvLayers, \
     Upsample, Generic_UNet, StackedConvLayers_multi_channel
 from nnunet.network_architecture.neural_network import SegmentationNetwork
+from nnunet.network_architecture.TAP import TAP
 from copy import deepcopy
 from torch.distributions import MultivariateNormal, Categorical
 from sklearn.mixture._gaussian_mixture import GaussianMixture
@@ -16,6 +17,7 @@ import copy
 
 from nnunet.utilities.sep import kl_divs, est_dist_sep_loss
 from nnunet.utilities.sep import extract_task_set
+from nnunet.utilities.sep import extract_correct_task_set
 
 import wandb
 
@@ -360,7 +362,9 @@ class UniSeg_model(Generic_UNet):
         self.seg_outputs = []
 
         # NOTE 
+        # feature_space_dim = 1 #base_num_features * 2 #NOTE
         feature_space_dim = 3 #base_num_features * 2 #NOTE
+        # feature_space_dim = 8 #base_num_features * 2 #NOTE
         output_features = base_num_features
         input_features = input_channels
 
@@ -501,9 +505,18 @@ class UniSeg_model(Generic_UNet):
         #                                     1, 1, 0, 1, 1, seg_output_use_bias)
 
         print("num channels before new block:", self.conv_blocks_localization[-1][-1].output_channels)
+        # self.final_extractor = nn.Sequential(StackedConvLayers(self.conv_blocks_localization[-1][-1].output_channels, feature_space_dim, 3,
+        #                           self.conv_op, self.conv_kwargs, self.norm_op, self.norm_op_kwargs, self.dropout_op,
+        #                           self.dropout_op_kwargs, nn.Tanh, {}, basic_block=basic_block))
         self.final_extractor = nn.Sequential(StackedConvLayers(self.conv_blocks_localization[-1][-1].output_channels, feature_space_dim, 3,
                                   self.conv_op, self.conv_kwargs, self.norm_op, self.norm_op_kwargs, self.dropout_op,
-                                  self.dropout_op_kwargs, nn.Tanh, {}, basic_block=basic_block))
+                                  self.dropout_op_kwargs, nn.Identity, {}, basic_block=basic_block))
+
+        self.final_extractors = []
+        for ds in range(len(self.conv_blocks_localization)):
+            self.final_extractors.append(conv_op(feature_space_dim, 1,
+                                            1, 1, 0, 1, 1, seg_output_use_bias))
+        self.final_extractors = nn.ModuleList(self.final_extractors)
 
         if self.weightInitializer is not None:
             self.apply(self.weightInitializer)
@@ -517,6 +530,7 @@ class UniSeg_model(Generic_UNet):
         # NOTE
         # feature_space_dim = 128
         self.final_tanh = nn.Tanh()
+        self.final_sigmoid = nn.Sigmoid()
 
 
     def forward(self, x, task_id, get_prompt=False):
@@ -536,42 +550,44 @@ class UniSeg_model(Generic_UNet):
         now_prompt = self.intermediate_prompt.repeat(bs,1,1,1,1)
         dynamic_prompt = self.fusion_layer(torch.cat([x, now_prompt], dim=1))
         task_prompt = torch.index_select(dynamic_prompt, 1, task_id[0])
-        task_prompt = self.extractor["identity"](task_prompt)
+        task_prompt = self.extractor["identity"](task_prompt) # for debugging forward hook
         if get_prompt:
             temp_x = x.detach().clone()
         x = torch.cat([x, task_prompt], dim=1)
 
         for u in range(len(self.tu)):
-            # x = self.tu[u](x)
-            # assert x.isnan().count_nonzero() == 0 
-            # x = torch.cat((x, skips[-(u + 1)]), dim=1)
-            # assert x.isnan().count_nonzero() == 0 
-            # print(x.dtype)
-            # x = self.conv_blocks_localization[u](x)
-            # assert x.isnan().count_nonzero() == 0 
-            # x = self.seg_outputs[u](x)
-            # seg_outputs.append(self.final_nonlin(x)) # NOTE
-            # # seg_outputs.append(x)
             x = self.tu[u](x)
             x = torch.cat((x, skips[-(u + 1)]), dim=1)
             x = self.conv_blocks_localization[u](x)
-            if u + 1 == len(self.tu):
-                # seg_outputs.append(self.final_tanh(x))
-                # seg_outputs.append(self.final_tanh(self.final_conv(x)))
-                # seg_outputs.append(F.normalize(self.final_extractor(x), dim=1))
-                seg_outputs.append(self.final_extractor(x))
-            else:
-                # seg_outputs.append(self.final_nonlin(self.seg_outputs[u](x)))
-                seg_outputs.append(self.final_dc_nonlin(self.seg_outputs[u](x)))
-                # seg_outputs.append(self.final_tanh(self.seg_outputs[u](x)))
+            seg_outputs.append(self.seg_outputs[u](x)) # NOTE
+            # seg_outputs.append(self.final_extractors[u](self.seg_outputs[u](x))) # NOTE
+            # seg_outputs.append(self.final_tanh(self.seg_outputs[u](x))) # NOTE
+            # seg_outputs.append(self.final_sigmoid(self.seg_outputs[u](x))) # NOTE
+            # seg_outputs.append(self.final_nonlin(self.seg_outputs[u](x))) # NOTE
+            # seg_outputs.append(self.final_dc_nonlin(self.seg_outputs[u](x))) # NOTE
 
-        assert x.isnan().count_nonzero() == 0 
-        # final_out = self.final_tanh(seg_outputs[-1].mean(dim=1, keepdim=True))
-        # final_out = F.normalize(self.final_tanh(self.channel_reduction(seg_outputs[-1])), dim=1)
-        # final_out = self.final_tanh(self.channel_reduction(seg_outputs[-1]))
-        # final_out = self.final_tanh(seg_outputs[-1])
-        # seg_outputs[-1] = final_out
+            ## assumes feature dim independence, then models distribution of each feature dim
+            # seg_outputs.append(torch.amax(self.seg_outputs[u](x), 1, keepdim=True)) # NOTE
+            # if u + 1 == len(self.tu):
+            #     # seg_outputs.append(self.final_tanh(x))
+            #     # seg_outputs.append(self.final_tanh(self.final_conv(x)))
+            #     # seg_outputs.append(F.normalize(self.final_extractor(x), dim=1))
+            #     # seg_outputs.append(self.final_extractor(x)) # NOTE
+            #     # seg_outputs.append(self.final_nonlin(self.seg_outputs[u](x))) # NOTE
+            #     seg_outputs.append(self.final_tanh(self.seg_outputs[u](x))) # NOTE
+            #     # seg_outputs.append(self.final_dc_nonlin(self.seg_outputs[u](x))) # NOTE
+            #     # seg_outputs.append(self.final_sigmoid(self.seg_outputs[u](x))) # NOTE
+            # else:
+            #     # seg_outputs.append(self.final_nonlin(self.seg_outputs[u](x)))
+            #     # seg_outputs.append(self.final_dc_nonlin(self.seg_outputs[u](x)))
+            #     seg_outputs.append(self.final_tanh(self.seg_outputs[u](x)))
+            #     # seg_outputs.append(self.seg_outputs[u](x))
+            #     # seg_outputs.append(self.final_sigmoid(self.seg_outputs[u](x)))
+
+            assert x.isnan().count_nonzero() == 0 
+        
         final_out = seg_outputs[-1]
+        # print(f"pct non-positive: {torch.sum(final_out <= 0) / torch.numel(final_out) }")
 
         if get_prompt and self._deep_supervision and self.do_ds:
             return list([seg_outputs[-1]] + [i(j) for i, j in
@@ -589,11 +605,6 @@ class UniSeg_model(Generic_UNet):
 
         else:
             return final_out
-        
-        if self._deep_supervision and self.do_ds:
-            return list([seg_outputs[-1]] + [i(j) for i, j in
-                                              zip(list(self.upscale_logits_ops)[::-1], seg_outputs[:-1][::-1])])
-
 
 
 class UniSegExtractor_DP(UniSeg_model):
@@ -726,7 +737,8 @@ class UniSegExtractor_DP(UniSeg_model):
             return MultivariateNormal(means, vars)
 
         comp_dists = []
-        for t in range(self.num_tasks):
+        # for t in range(self.num_tasks):
+        for t in range(self.num_classes):
             cov_t = vars[t]
             # if len(cov_t.shape) != 3:
             #     cov_t = cov_t.unsqueeze(0).repeat(means[t].size(0), 1, 1)
@@ -757,8 +769,8 @@ class UniSegExtractor_DP(UniSeg_model):
             features = super().forward(x, task_id, get_prompt=False)
         norms = features[0].reshape(features[0].size(0), -1).norm(dim=1)
         for norm in norms:
-            if self.with_wandb: wandb.log({"output feature space norm (per batch)": norm.item()})
-            print(f"output feature space norm (per batch): {norm.item()}")
+            if self.with_wandb: wandb.log({"output feature space norm (per input)": norm.item()})
+            print(f"output feature space norm (per input): {norm.item()}")
             # print(f"features: {features[0].mean(dim=1)}, max: {features[0].max(dim=1)}, min: {features[0].min(dim=1)}")
 
         # extract + permute dims for DP 
@@ -825,7 +837,6 @@ class UniSegExtractor_DP(UniSeg_model):
 
         return seg
 
-
     def standardize_segmentation(self, segmentation, tc_inds_to_cls):
 
         vals = torch.unique(segmentation)
@@ -879,16 +890,21 @@ class UniSegExtractor_DP(UniSeg_model):
 
 class TAPFeatureExtractor_DP(UniSeg_model):
 
-    def __init__(self, feature_space_dim, gmm_comps, num_tasks, class_lst_to_std_mapping, task_id_class_lst_mapping, *args, with_wandb=False, **kwargs):
+    def __init__(self, feature_space_dim, gmm_comps, num_classes, class_lst_to_std_mapping, task_id_class_lst_mapping, *args, with_wandb=False, **kwargs):
         super().__init__(*args, **kwargs)
 
-        self.tap = DynamicDistributionModel_DP(feature_space_dim, int(self.intermediate_prompt.numel() / self.num_class), num_tasks, momentum=0.99, queue_size=5000, gmm_comps=gmm_comps)
+        num_tasks = len(task_id_class_lst_mapping.keys())
+        self.task_to_num_classes = {tidx : len(cls_lst) for tidx, cls_lst in task_id_class_lst_mapping.items()}
+        self.num_tasks = num_tasks
+        # self.tap = DynamicDistributionModel_DP(feature_space_dim, int(self.intermediate_prompt.numel() / self.num_class), num_classes, momentum=0.99, queue_size=5000, gmm_comps=gmm_comps)
+        # self.feature_space_dim, self.num_components, 0.995, queue_size=5000, gmm_comps = self.max_gmm_comps
+        self.tap = TAP(feature_space_dim, num_classes, num_tasks, momentum=0.99, queue_size=5000, gmm_comps=10)
 
-        self.gaussian_mixtures = [GaussianMixture(gmm_comps, tol=1e-4) for i in range(num_tasks)]
+        self.gaussian_mixtures = [GaussianMixture(gmm_comps, tol=1e-4) for i in range(num_classes)]
         self.mus = None 
         self.covs = None
 
-        self.num_tasks = num_tasks
+        # self.num_classes = num_classes
         self.feature_space_dim = feature_space_dim
         self.gmm_comps = gmm_comps
         
@@ -899,16 +915,55 @@ class TAPFeatureExtractor_DP(UniSeg_model):
         self.feature_space_gmm = None
         self.update_target_dist = False
 
+        self.task_feature_space_gmm = [None for _ in range(num_tasks)]
+        self.task_taps = nn.ModuleList([
+            # TAP(feature_space_dim, num_classes, num_tasks, momentum=0.99, queue_size=10000, val_q_size=2500, gmm_comps=10) 
+            TAP(feature_space_dim, self.task_to_num_classes[tidx], num_tasks, momentum=0.99, queue_size=10000, val_q_size=2500, gmm_comps=10) 
+            for tidx in range(num_tasks)
+        ])
+        # self.task_taps = [
+        #     TAP(feature_space_dim, num_classes, num_tasks, momentum=0.99, queue_size=5000, gmm_comps=10) 
+        #     for _ in range(num_tasks)
+        # ]
+        self.tasks_mus = [None for _ in range(num_tasks)]
+        self.tasks_covs = [None for _ in range(num_tasks)]
+        self.tasks_weights = [None for _ in range(num_tasks)]
+
         self.class_lst_to_std_mapping = class_lst_to_std_mapping
         self.task_id_class_lst_mapping = task_id_class_lst_mapping
         self.with_wandb = with_wandb
+        
+        self.var_gmm = BayesianGaussianMixture(n_components=10, covariance_type="diag", warm_start=True, max_iter=30, random_state=42)
+        # self.var_gmm = BayesianGaussianMixture(n_components=10, covariance_type="full", warm_start=True, max_iter=30, random_state=42)
 
+        # self.task_var_gmms = [
+        #     BayesianGaussianMixture(n_components=10, covariance_type="diag", warm_start=True, max_iter=30, random_state=42)
+        #     for _ in range(num_tasks)
+        # ]
+        self.task_var_gmms = [
+            [ # NOTE
+            BayesianGaussianMixture(n_components=10, covariance_type="diag", warm_start=True, max_iter=400, random_state=42)
+            # BayesianGaussianMixture(n_components=gmm_comps, covariance_type="full", warm_start=True, max_iter=100)
+            for _ in range(self.task_to_num_classes[tidx])
+            # for _ in range(num_classes)
+            ]
+            for tidx in range(num_tasks)
+        ]
+
+    def fit_task_gmms(self, X, task, cidx):
+
+        # self.task_var_gmms[task].fit(X)
+        self.task_var_gmms[task][cidx].fit(X)
+
+        return self.task_var_gmms[task][cidx], self.gmm_comps, []
+    
     def fit_gmms(self, X, **kwargs):
-        gmm = BayesianGaussianMixture(n_components=10)
+        # gmm = BayesianGaussianMixture(n_components=10, covariance_type="diag", **kwargs)
         # gmm = BayesianGaussianMixture(n_components=5)
-        gmm.fit(X)
+        # gmm.fit(X)
+        self.var_gmm.fit(X)
 
-        return gmm, 10, []
+        return self.var_gmm, self.gmm_comps, []
 
     def find_optimal_components(self, X, min_components=1, max_components=10):
         bics = []
@@ -924,10 +979,15 @@ class TAPFeatureExtractor_DP(UniSeg_model):
         optimal_n = np.argmin(bics) + min_components
         return best_gmm, optimal_n, bics
 
-    def set_feature_space_distribution_parameters(self, mus, covs):
-        
-        self.mus = mus 
-        self.covs = covs
+    def set_feature_space_distribution_parameters(self, mus, covs, weights, task=None):
+        if task is not None:
+            self.tasks_mus[task] = mus
+            self.tasks_covs[task] = covs
+            self.tasks_weights[task] = weights
+        else:
+            self.mus = mus 
+            self.covs = covs
+            self.weights = weights
 
     def reestimate_components(self):
         pass 
@@ -955,33 +1015,65 @@ class TAPFeatureExtractor_DP(UniSeg_model):
 
     def forward_train(self, x, task_id=None, gt_seg=None, target_classes=None, update_target_dist=False, **kwargs):
         features, _, _, tp_feats, _ = super().forward(x, task_id, get_prompt=True)
+
+        # apply normalizations
+        # NOTE check dimensions here
+        # for i, feature in enumerate(features):
+        #     feature = feature.permute(0, 2, 3, 4, 1)
+        #     # nfeature = self.feat_norm(feature) # (b h w) c
+        #     nfeature = F.normalize(feature, p=2, dim=-1)
+        #     features[i] = nfeature.permute(0, 4, 1, 2, 3,)
+
         
-        
+        # with torch.no_grad():
         norms = features[0].reshape(features[0].size(0), -1).norm(dim=1)
         for norm in norms:
-            if self.with_wandb: wandb.log({"output feature space norm (per batch)": norm.item()})
-            print(f"output feature space norm (per batch): {norm.item()}")
+            if self.with_wandb: wandb.log({"output feature space norm (per input)": norm.item()})
+            print(f"output feature space norm (per input): {norm.item()}")
             # print(f"features: {features[0].mean(dim=1)}, max: {features[0].max(dim=1)}, min: {features[0].min(dim=1)}")
 
+        # NOTE
         # extract + permute dims for DP 
         lst_gt_extractions = []
-        for i, feature in enumerate(features):
+        for i, feature in enumerate(features): # for each level of the deep supervision
             gt_extractions = [extract_task_set(feature, gt_seg[i], c, keep_dims=True).permute(1, 0) for c in target_classes[i]]
             lst_gt_extractions.append(gt_extractions)
-            
-        tc_inds = self.update_queues(lst_gt_extractions, target_classes, task_id)
+        
+        tc_inds = self.update_queues(lst_gt_extractions, target_classes, task_id, update_size=25, task_specific=True)
         # self.adjust_dist_params(tp_feats, task_id, tc_inds)
 
-        seg = self.full_segment(features[0], task_id)
-        features[0] = seg
+        # seg = self.full_segment(features[0], task_id)
+        # features[0] = seg
+        segs, segs_probs = [], []
+        for i, feature in enumerate(features): # for each level of the deep supervision
+            # features[i] = self.full_segment(feature, task_id)
+            seg, seg_probs = self.full_segment(feature, task_id, return_probs=True)
+            segs.append(seg)
+            segs_probs.append(seg_probs)
+
+        # tc_inds = target_classes 
+        # lst_gt_extractions = segs
+        
+        # lst_gt_correct_extractions = []
+        # for i, feature in enumerate(features):
+        #     gt_correct_extractions = [extract_correct_task_set(feature, gt_seg[i], c, segs[i], keep_dims=True).permute(1, 0) for c in target_classes[i]]
+        #     lst_gt_correct_extractions.append(gt_correct_extractions)
+
+        # lst_gt_extractions = lst_gt_correct_extractions # NOTE
+        # tc_inds = self.update_queues(lst_gt_correct_extractions, target_classes, task_id, task_specific=True, update_size=25)
         
         # return features, lst_gt_extractions[0], tc_inds
-        return features, lst_gt_extractions, tc_inds
+        # return features, lst_gt_extractions, tc_inds
+        return segs, lst_gt_extractions, tc_inds, segs_probs, features
 
     def forward_inference(self, x, task_id=None, gt_seg=None, target_classes=None, **kwargs):
         features, _, _, tp_feats, _ = super().forward(x, task_id, get_prompt=True)
         tc_inds = self.task_id_class_lst_mapping[task_id[0].item()]
         # self.adjust_dist_params(tp_feats, task_id, tc_inds)
+
+        # features = features.permute(0, 2, 3, 4, 1)
+        # features = F.normalize(features, p=2, dim=-1)
+        # features = features.permute(0, 4, 1, 2, 3)
         
         if gt_seg is not None:
             # extract + permute dimensions for DP
@@ -989,22 +1081,23 @@ class TAPFeatureExtractor_DP(UniSeg_model):
 
             return self.full_segment(features, task_id), gt_extractions
 
-        return self.full_segment(features, task_id)
+        # return self.full_segment(features, task_id)
+        # return features
+        seg, seg_prob = self.full_segment(features, task_id, return_probs=True)
+        return seg_prob
 
-    def update_queues(self, lst_extractions, lst_target_classes, task_id):
-        # extract tasks per gpu (should be big speed up)
-
+    def update_queues(self, lst_extractions, lst_target_classes, task_id, update_size=10, task_specific=False):
         lst_tc_inds = []
         k = 0
         while k < len(lst_extractions):
         # for k, extractions in enumerate(lst_extractions):
-            extractions = lst_extractions[k]
-            target_classes = lst_target_classes[k]
+            extractions = lst_extractions[k] # feature extractions at the k-th depth
+            target_classes = lst_target_classes[k] # target classes at the k-th depth
             tc_inds = []
             i, j = 0, 0
             while i < len(extractions) and j < len(target_classes):
                 # re-arrange dimensions for loss
-                extractions[i] = extractions[i].permute(1, 0)
+                extractions[i] = extractions[i].permute(1, 0) # extreactions for the i-th class
                 if extractions[i].size(-1) < 2:
                     _ = extractions.pop(i)
                 else:
@@ -1019,13 +1112,19 @@ class TAPFeatureExtractor_DP(UniSeg_model):
             else:
                 lst_extractions.pop(k) 
 
-        print(f"tc inds: {lst_tc_inds}")
+        # print(f"tc inds: {lst_tc_inds}")
         if sum([len(l) for l in lst_tc_inds]) == 0:
             return 0.
 
         # Updated Queues using the final feature space outputs
         # pick random element from extraction 
-        self.tap.update_queues(lst_extractions[0], lst_tc_inds[0])
+        # self.tap.update_queues(lst_extractions[0], lst_tc_inds[0], update_size=25)
+        t = int(task_id[0])
+        if task_specific:
+            # self.task_taps[t].update_task_queue(t, lst_extractions[0], lst_tc_inds[0], update_size=update_size)
+            self.task_taps[t].update_queues(lst_extractions[0], lst_tc_inds[0], update_size=update_size)
+        else:
+            self.tap.update_queues(lst_extractions[0], lst_tc_inds[0], update_size=update_size)
 
         # return lst_tc_inds[0]
         return lst_tc_inds
@@ -1033,7 +1132,7 @@ class TAPFeatureExtractor_DP(UniSeg_model):
     def init_gmms(self, means, covs):
         # means, covs = self.dynamic_dist.get_mean_var()
 
-        for i in range(self.num_tasks):
+        for i in range(self.num_classes):
             self.gaussian_mixtures[i].means_ = means[i].detach().cpu().numpy()
             self.gaussian_mixtures[i].covariances_ = covs[i].detach().cpu().numpy()#.item() * np.eye(self.feature_space_dim)
 
@@ -1042,7 +1141,7 @@ class TAPFeatureExtractor_DP(UniSeg_model):
     def gmm_analysis(self, feature_space_qs, mus, sigs):
         sizes = [0.10, 0.25, 0.50, 0.8, 0.9, 1]
         comp_errors = []
-        for t in range(self.num_tasks):
+        for t in range(self.num_classes):
             task_queue = feature_space_qs[t] 
             if len(task_queue) < self.queue_min:
                 continue
@@ -1070,7 +1169,7 @@ class TAPFeatureExtractor_DP(UniSeg_model):
         trained_indices = self.gmm_analysis(feature_space_qs, mus, sigs)
         # Train using queue
         trained_indices = []
-        for t in range(self.num_tasks):
+        for t in range(self.num_classes):
             task_queue = feature_space_qs[t] 
             if len(task_queue) < self.queue_min:
                 continue
@@ -1152,9 +1251,37 @@ class TAPFeatureExtractor_DP(UniSeg_model):
 
         return dist
 
+    def construct_task_feature_space_gmm_implicit(self, task):
+        task_mus, task_covs, task_weights = self.tasks_mus[task], self.tasks_covs[task], self.tasks_weights[task]
+        task_gmm_component_distributions = []
+        # for i in range(self.num_classes): # i is class; idx for distribution representing class i of `task`
+        num_classes = self.task_to_num_classes[task]
+        for i in range(num_classes): # i is class; idx for distribution representing class i of `task`
+            mu, cov = task_mus[i], task_covs[i]
+            if mu.shape[0] == 1:
+                dist =  MultivariateNormal(mu, cov)
+                task_gmm_component_distributions.append(dist)
+                continue
+
+            comp_dists = []
+            for t in range(mu.shape[0]):
+                comp_dists.append(MultivariateNormal(mu[t], cov[t])) 
+
+            categorical = Categorical(task_weights[i])
+
+            # self.feature_space_gmm = GaussianMixtureModel(categorical, comp_dists)
+            dist = GaussianMixtureModel(categorical, comp_dists)
+            task_gmm_component_distributions.append(dist)
+
+        # categorical = Categorical(torch.ones(self.num_classes, device=self.mus[0].device) / self.num_classes)
+        # categorical = Categorical(torch.ones(self.num_classes, device=task_mus[0].device) / self.num_classes)
+        categorical = Categorical(torch.ones(num_classes, device=task_mus[0].device) / num_classes)
+        self.task_feature_space_gmm[task] = GaussianMixtureModel(categorical, task_gmm_component_distributions)
+            
+
     def construct_feature_space_gmm_implicit(self):
         component_distributions = []
-        for i in range(self.num_tasks):
+        for i in range(self.num_classes):
             mu, cov = self.mus[i], self.covs[i]
             if mu.shape[0] == 1:
                 dist =  MultivariateNormal(mu, cov)
@@ -1173,38 +1300,65 @@ class TAPFeatureExtractor_DP(UniSeg_model):
             dist = GaussianMixtureModel(categorical, comp_dists)
             component_distributions.append(dist)
 
-        # categorical = Categorical(torch.ones(self.num_tasks, device=mus.device) / self.num_tasks)
-        categorical = Categorical(torch.ones(self.num_tasks, device=self.mus[0].device) / self.num_tasks)
+        # categorical = Categorical(torch.ones(self.num_classes, device=mus.device) / self.num_classes)
+        categorical = Categorical(torch.ones(self.num_classes, device=self.mus[0].device) / self.num_classes)
         self.feature_space_gmm = GaussianMixtureModel(categorical, component_distributions)
 
 
-    def construct_feature_space_gmm(self, mus, covs):
+    def construct_feature_space_gmm(self, mus, covs, task=None):
+        if task is not None:
+            num_classes = self.task_to_num_classes[task]
+        else: 
+            num_classes = self.num_classes 
+
         component_distributions = []
-        for i in range(self.num_tasks):
+        for i in range(num_classes):
             mu, cov = mus[i], covs[i]
             component_distributions.append(self.construct_torch_gmm(mu, cov))
 
-        # categorical = Categorical(torch.ones(self.num_tasks, device=mus.device) / self.num_tasks)
-        categorical = Categorical(torch.ones(self.num_tasks, device=mus[0].device) / self.num_tasks)
-        self.feature_space_gmm = GaussianMixtureModel(categorical, component_distributions)
+        # categorical = Categorical(torch.ones(self.num_classes, device=mus.device) / self.num_classes)
+        categorical = Categorical(torch.ones(num_classes, device=mus[0].device) / num_classes)
+        if task is not None:
+            self.task_feature_space_gmm[task] = GaussianMixtureModel(categorical, component_distributions)
+        else:
+            self.feature_space_gmm = GaussianMixtureModel(categorical, component_distributions)
 
-    def forward(self, x, task_id=None, for_loss=False, uniseg_only=False, **kwargs):
+    def forward(self, x, task_id=None, for_loss=False, **kwargs):
 
         if self.training or for_loss:
             return self.forward_train(x, task_id=task_id, **kwargs)
         else :
             return self.forward_inference(x, task_id=task_id, **kwargs)
 
-    def segment(self, features: torch.Tensor, component_indices=None):
+    def segment(self, features: torch.Tensor, component_indices=None, task=None, return_probs=False):
 
         b = features.size(0)
         h, w, d = tuple(features.shape[2:])
         bview_features = features.permute(0, 2, 3, 4, 1).reshape(b, -1, self.feature_space_dim)
 
-        feature_log_probs = self.feature_space_gmm.score(bview_features, component_indices=component_indices)
+        if task is not None:
+            task = task[0].item()
+            feature_log_probs = self.task_feature_space_gmm[task].score(bview_features, component_indices=component_indices)
+        else:    
+            feature_log_probs = self.feature_space_gmm.score(bview_features, component_indices=component_indices)
+        
+        # feature_log_probs = feature_log_probs.reshape(b, h, w, d, len(component_indices)).permute(0, 4, 1, 2, 3)
         feature_log_probs = feature_log_probs.reshape(b, h, w, d, len(component_indices)).permute(0, 4, 1, 2, 3)
+
+        if len(component_indices) < self.num_classes:
+            # add dummy
+            dummy_dim = torch.zeros(b, 1, h, w, d, device=feature_log_probs.device)
+            feature_log_probs = torch.cat((feature_log_probs, dummy_dim), 1)
         # segmentation = torch.argmax(feature_log_probs, dim=1)
-        segmentation = self.bayes(feature_log_probs)
+        # segmentation = self.bayes(feature_log_probs)
+        # segmentation = torch.argmax(F.softmax(feature_log_probs, dim=1), dim=1)
+        segmentation = torch.argmax(feature_log_probs, dim=1)
+
+        if return_probs:
+            # for CE: 
+            # input shape = (batch_size, num_classes, d1, d2, ..., dK), 
+            # target shape = (batch_size, d1, d2, ..., dK) , contianing class indices
+            return segmentation, feature_log_probs
 
         return segmentation
 
@@ -1215,16 +1369,49 @@ class TAPFeatureExtractor_DP(UniSeg_model):
 
         return seg
 
-    def full_segment(self, x, task_id):
+    def full_segment(self, x, task_id, return_probs=False):
         component_indices = self.task_id_class_lst_mapping[task_id[0].item()] if self.task_id_class_lst_mapping is not None else None
         # component_indices = None # self.task_id_class_lst_mapping[task_id[0].item()] if self.task_id_class_lst_mapping is not None else None
-        std_output_segmentation = self.segment(x, component_indices=component_indices)
+        seg_output = self.segment(x, component_indices=component_indices, task=task_id, return_probs=return_probs)
+        if return_probs:
+            std_output_segmentation, seg_probabilities = seg_output
+        else :
+            std_output_segmentation = seg_output
+        
         # output_segmentation = self.segment(x, component_indices=component_indices)
         # std_output_segmentation = self.standardize_segmentation(output_segmentation, self.class_lst_to_std_mapping)
         # est_seg = torch.nn.functional.one_hot(std_output_segmentation, num_classes_in_gt).permute(0, 4, 1, 2, 3)
-        perm_dims = tuple([0, len(x.shape)-1] + list(range(1, len(x.shape)-1)))
+        perm_dims = (0, 4, 1, 2, 3) # tuple([0, len(x.shape)-1] + list(range(1, len(x.shape)-1)))
         # est_seg = torch.nn.functional.one_hot(std_output_segmentation, len(self.task_id_class_lst_mapping[int(task_id.item())])).permute(perm_dims)
-        est_seg = torch.nn.functional.one_hot(std_output_segmentation, self.num_classes)
-        est_seg = torch.permute(est_seg, perm_dims)
+        est_seg = F.one_hot(std_output_segmentation, self.num_classes)
+        est_seg = torch.permute(est_seg, perm_dims).to(dtype=torch.float64)
 
-        return est_seg.to(dtype=torch.float64)
+        if return_probs:
+            return est_seg, seg_probabilities
+
+        return est_seg
+
+    def component_wise_logp(self, x, task):
+        """
+        -- univariate -- 
+        x shape: (Batch, Class, H, W, D)
+        task: int
+        """
+        batch_size, channels, h, w, d = tuple(x.shape)
+        cls_gmms = self.task_univar_feature_space_gmm[task]
+        task_num_classes = self.task_to_num_classes[task]
+        output_probs = []
+        for batch_idx in range(batch_size):
+            class_view_batch_features = x[batch_idx].reshape(task_num_classes, -1, channels) # feature space dim = 1
+            batch_probs = []
+            for class_idx in range(task_num_classes):
+                cls_gmm = cls_gmms[class_idx]
+                class_probs = cls_gmm.log_prob(class_view_batch_features[class_idx]) # (-1, self.feaure_space_dim)
+                batch_probs.append(class_probs.reshape(h, w, d, self.feature_space_dim))
+            batch_probs = torch.vstack(batch_probs) # (num_classes, h, w, d, self.feature_space_dim)
+            output_probs.append(batch_probs)
+
+        output_probs = torch.vstack(output_probs) # (b, num_classes, h, w, d, self.feature_space_dim)
+        out = output_probs.permute(0, 4, 1, 2, 3)
+
+        return out

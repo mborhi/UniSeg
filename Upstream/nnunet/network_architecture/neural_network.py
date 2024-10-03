@@ -497,7 +497,9 @@ class SegmentationNetwork(NeuralNetwork):
             predicted_probabilities = predicted_probabilities.detach().cpu().numpy()
             predicted_segmentation = np.zeros(predicted_probabilities.shape[1:], dtype=np.float32)
             for i, c in enumerate(regions_class_order):
-                predicted_segmentation[predicted_probabilities[i] > 0.5] = c
+                predicted_segmentation[predicted_probabilities[i] > 0.5] = c #NOTE NOTE NOTE
+                # # predicted probabilities IS ALREADY SEGMENTATION
+                # predicted_segmentation[predicted_probabilities[i]==c] = c#[predicted_probabilities[i] > 0.5] = c
 
         return predicted_segmentation, predicted_probabilities
 

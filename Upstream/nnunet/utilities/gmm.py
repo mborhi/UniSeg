@@ -115,3 +115,14 @@ class GaussianMixtureModel:
         c = torch.argmax(prob_sums)
 
         return c 
+
+
+def get_choleskys(cov_matrices):
+    precision_cholesky_list = []
+
+    for cov in cov_matrices:
+        precision_matrix = torch.inverse(cov)
+        precision_cholesky = torch.linalg.cholesky(precision_matrix)
+        precision_cholesky_list.append(precision_cholesky)
+
+    return precision_cholesky_list

@@ -36,7 +36,9 @@ from nnunet.training.loss_functions.dist_match_loss import DynamicDistMatchingLo
 from nnunet.training.loss_functions.deep_supervision import MixedDSLoss
 from nnunet.training.loss_functions.dice_loss import DC_and_CE_loss, SoftDiceLoss, get_tp_fp_fn_tn
 from torch.nn.parallel import DistributedDataParallel as DDP
-from nnunet.utilities.sep import component_wise_kl_div, measure_change, is_positive_definite
+from nnunet.utilities.sep import component_wise_kl_div, measure_change, is_positive_definite, pen_domain
+from nnunet.utilities.gmm import get_choleskys
+from nnunet.utilities.wandb_util import wandb_log_outputs
 from nnunet.utilities.tensor_utilities import sum_tensor
 import copy 
 import wandb
@@ -115,10 +117,11 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
         self.visual_epoch = -1
         self.total_task_num = len(self.task.keys()) if not single_task else 1 # NOTE
         self.batch_size = batch_size
-        self.num_batches_per_epoch = (50 * self.total_task_num) // (num_gpus * self.batch_size) #int((50 // num_gpus) * self.total_task_num)
-        self.num_val_batches_per_epoch = self.num_batches_per_epoch // 5
+        self.num_batches_per_epoch = (50 * self.total_task_num) // (num_gpus * (self.batch_size // 2)) #int((50 // num_gpus) * self.total_task_num)
+        # self.num_batches_per_epoch = (5 * self.total_task_num) // (num_gpus * self.batch_size) #int((50 // num_gpus) * self.total_task_num)
+        # self.num_val_batches_per_epoch = self.num_batches_per_epoch // self.total_task_num#// 5
         print("num batches per epoch:", self.num_batches_per_epoch)
-        print("num batches per val epoch:", self.num_val_batches_per_epoch)
+        # print("num batches per val epoch:", self.num_val_batches_per_epoch)
         print("total task num", self.total_task_num)
         print(os.getcwd())
         # if os.path.exists(os.path.join(self.output_folder, "code")):
@@ -132,12 +135,13 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
         self.feature_space_dim = feature_space_dim
         self.gmm_comps = gmm_comps
         self.queue_size = queue_size
-        self.num_components = len(self.class_lst_to_std_mapping.keys())
+        self.num_components = len(self.class_lst_to_std_mapping.keys()) # NOTE num classes
+        self.num_classes = self.num_components
         self.update_target_dist = False
         self.return_est_dists = True
         self.loss_type = loss_type
 
-        self.max_gmm_comps = 10
+        self.max_gmm_comps = gmm_comps
 
         self.recalc_dist = False
 
@@ -176,7 +180,13 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
         #                             dropout_op_kwargs,
         #                             net_nonlin, net_nonlin_kwargs, True, False, lambda x: x, InitWeights_He(1e-2),
         #                             self.net_num_pool_op_kernel_sizes, self.net_conv_kernel_sizes, False, True, True)
-        uniseg_args = (self.patch_size, self.total_task_num, [1, 2, 4], self.base_num_features, self.num_classes,
+        # uniseg_args = (self.patch_size, self.total_task_num, [1, 2, 4], self.base_num_features, self.num_classes,
+        #                             len(self.net_num_pool_op_kernel_sizes),
+        #                             self.conv_per_stage, 2, conv_op, norm_op, norm_op_kwargs, dropout_op,
+        #                             dropout_op_kwargs,
+        #                             net_nonlin, net_nonlin_kwargs, True, False, lambda x: x, InitWeights_He(1e-2),
+        #                             self.net_num_pool_op_kernel_sizes, self.net_conv_kernel_sizes, False, True, True)
+        uniseg_args = (self.patch_size, self.total_task_num, [1, 2, 4], self.base_num_features, self.num_components,
                                     len(self.net_num_pool_op_kernel_sizes),
                                     self.conv_per_stage, 2, conv_op, norm_op, norm_op_kwargs, dropout_op,
                                     dropout_op_kwargs,
@@ -197,34 +207,21 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
                                         )
         # self.tap = TAP(self.feature_space_dim, self.num_components, 0.995, queue_size=5000, gmm_comps = self.gmm_comps)
         # self.tap = TAP(self.feature_space_dim, self.num_components, 0.995, queue_size=5000, gmm_comps = 10)
-        self.tap = TAP(self.feature_space_dim, self.num_components, 0.995, queue_size=5000, gmm_comps = self.max_gmm_comps)
-        # pi = [55, 56, 57, 58, 110, 114]
-        # pi = [53, 54, 55, 56, 57, 58,]
-        # ppi = [45, 46, 47, 48, 49, 50, 51 ,52, 105, 109, 110, 111, 112]
-        # pppi = [45, 46, 47, 48, 49, 50, 51, 52, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100, 101, 105, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140]
-        # for i, (p_name, p) in enumerate(self.network.named_parameters()):
-        #     if i in pppi:
-        #         p.requires_grad = False
-        #         print(f"{i}: {p_name}")
-        #         self.print_to_log_file(f"{i}: {p_name}")
-        #     elif i in pi:
-        #         p.requires_grad = False
-        #         print(f"{i}: {p_name}")
-        #         self.print_to_log_file(f"{i}: {p_name}")
-        #     elif i in ppi:
-        #         print(f"{i}: {p_name}")
-        #     else:
-        #         print({f"{i}: {p_name}"})
-
+        self.tap = TAP(self.feature_space_dim, self.num_components, self.total_task_num, 0.995, queue_size=5000, gmm_comps = self.max_gmm_comps)
+        # self.task_taps = [
+        #     TAP(self.feature_space_dim, self.num_components, self.total_task_num, 0.995, queue_size=5000, gmm_comps = self.max_gmm_comps)
+        #     for _ in range(self.total_task_num)
+        # ]
         
-        # print(1 /0)
-        # self.network.inference_apply_nonlin = lambda x: x
+        self.network.inference_apply_nonlin = softmax_helper # lambda x: x
         if torch.cuda.is_available():
-            self.network.cuda()
-            self.tap.cuda()
+            self.network = self.network.cuda()
+            # self.tap = self.tap.cuda()
+            # for t in range(self.total_task_num):
+            #     self.task_taps[t] = self.task_taps[t].cuda()
 
 
-        self.network.min_dist = self.min_dist
+        # self.network.min_dist = self.min_dist
 
     def initialize_optimizer_and_scheduler(self):
         assert self.network is not None, "self.initialize_network must be called first"
@@ -236,10 +233,23 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
                                                         threshold_mode="abs")
         self.tap_optimizer = torch.optim.Adam(self.tap.parameters(), self.initial_lr, weight_decay=self.weight_decay,
                                         amsgrad=True)
+        # self.tap_optimizer = torch.optim.Adam(itertools.chain(*(tp.parameters() for tp in self.task_taps)), self.initial_lr, weight_decay=self.weight_decay,
+        #                                 amsgrad=True)
         self.tap_lr_scheduler = lr_scheduler.ReduceLROnPlateau(self.tap_optimizer, mode='min', factor=0.2,
                                                         patience=self.lr_scheduler_patience,
                                                         verbose=True, threshold=self.lr_scheduler_eps,
                                                         threshold_mode="abs")
+        self.tap_tasks_optimizer = [None for _ in range(self.total_task_num)]
+        self.tap_tasks_lr_scheduler = [None for _ in range(self.total_task_num)]
+        for t in range(self.total_task_num):
+            # self.tap_tasks_optimizer[t] = torch.optim.Adam(self.task_taps[t].parameters(), self.initial_lr, weight_decay=self.weight_decay,
+            #                                 amsgrad=True)
+            self.tap_tasks_optimizer[t] = torch.optim.Adam(self.network.task_taps[t].parameters(), self.initial_lr, weight_decay=self.weight_decay,
+                                            amsgrad=True)
+            self.tap_tasks_lr_scheduler[t] = lr_scheduler.ReduceLROnPlateau(self.tap_tasks_optimizer[t], mode='min', factor=0.2,
+                                                            patience=self.lr_scheduler_patience,
+                                                            verbose=True, threshold=self.lr_scheduler_eps,
+                                                            threshold_mode="abs")
 
     def initialize(self, training=True, force_load_plans=False):
         """
@@ -316,7 +326,6 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
             # torch.cuda.manual_seed_all(42)
             # max_var = 0.001
             # self.max_var = 0.001
-            self.max_var = 0.02
             # delta=1-(1e-03)
             # # NOTE just use linspace here
             # # min_dist = 100. #self.distance_bounds(k=num_components, delta=delta, max_var=max_var*100)
@@ -344,43 +353,50 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
             # computed_min_dist = torch.cdist(self.mus, self.mus, p=2).fill_diagonal_(torch.inf).min().item()
             # self.mus = self.mus.to(dtype=torch.float16)
 
-            # self.min_dist = min_dist
-            # self.min_dist = 0.5 * (computed_min_dist + min_dist)
-            # vars = [0.03, 0.02, 0.01]
-            # vars = [0.08, 0.01, 0.001]
-            # vars = [0.12, 0.03, 0.001]
-            # vars = [0.001, 0.11, 0.001]#
-            # c= 1
-            # c=1.5
-            # vars = [1/2, 1/2, 1/2]
-            # vars = [0.1, 0.4, 0.1] 
-            # vars = [0.001, 0.4, 0.3]
-            # vars = [0.3, 0.3, 0.001]# c = 0.65
-            # c=0.65
-            # vars = [1/50, 1/50, 1/50]
-            # c = 2
-            vars = [1/30, 1/30, 1/30]
-            c = 1.5
+            """
+            vars = np.ones(3) / 10
+            c = 0.1
             self.csep = c
-            # vars = [2, 2, 2]
-            # c=0.00001
-            print(f"{vars}, {c}, {self.feature_space_dim}")
-            min_dists = [c * np.sqrt(self.feature_space_dim * v) for i, v in enumerate(vars)]
-            self.min_dists = min_dists
-            print(f"{min_dists}")
-            self.min_dist = max(min_dists)
-            max_trys = 15000
-            for t in range(max_trys):
-                if t % 100 == 0: print(t)
-                try:
-                    centers = self.init_centers(self.num_components, self.feature_space_dim, min_dists, sort=False)
-                    break
-                except ValueError:
-                    pass
+            domain = [0, 1]
+            vars = np.ones(3) / 10
+            c = 0.1
+            self.csep = c
+            domain = [0, 1]
+            self.domain = domain
+            """
 
-            self.mus, self.sigs = self.init_gmm_centers(centers, self.feature_space_dim, min_dists, c)
-            # self.mus, self.sigs = self.init_from_fixed()
-            self.weights = self.init_uniform_mixture_weights()
+            # Current best
+            vars = [1/30, 1/30, 1/30]
+            csep = 1.5
+            self.csep = csep
+            domain = [-1,1]
+            self.domain = domain
+
+            # self.mus, self.sigs, self.weights, self.min_dists = self.init_task_distribution(vars, csep, domain=domain)
+            # self.min_dist = max(self.min_dists)
+            
+            # NOTE Old, can remove
+            # print(f"{vars}, {csep}, {self.feature_space_dim}")
+            # min_dists = [csep * np.sqrt(self.feature_space_dim * v) for i, v in enumerate(vars)]
+            # self.min_dists = min_dists
+            # print(f"{min_dists}")
+            # self.min_dist = max(min_dists)
+            # max_trys = 15000
+            # for t in range(max_trys):
+            #     if t % 100 == 0: print(t)
+            #     try:
+            #         # centers = self.init_centers(self.num_components, self.feature_space_dim, min_dists, sort=False)
+            #         centers = self.init_centers(self.num_components, self.feature_space_dim, min_dists, domain=domain, sort=False)
+            #         break
+            #     except ValueError:
+            #         pass
+
+            # self.mus, self.sigs = self.init_gmm_centers(centers, self.feature_space_dim, min_dists, csep)
+            # # self.mus, self.sigs = self.init_from_fixed()
+            # self.weights = self.init_uniform_mixture_weights()
+            
+            # init 
+            # self.choleskys = get_choleskys(self.sigs)
             
             # self.mus = self.mus.to(dtype=torch.float16)
             # self.mus, self.min_dist, self.max_var = self.optimal_sep(self.num_components, self.feature_space_dim)
@@ -394,49 +410,56 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
             #     vars[i] * torch.eye(self.feature_space_dim, dtype=torch.float32) for i in range(self.num_components)
             # ])
             # self.input_vars = torch.tensor(vars).to(dtype=torch.float16)
+
+            print(self.total_task_num)
+            tasks_vars = [vars for _ in range(self.total_task_num)]
+            tasks_cseps = [csep for _ in range(self.total_task_num)]
+
+            self.tasks_mus, self.tasks_sigs, self.tasks_weights, self.tasks_min_dists, self.tasks_min_dist = self.init_all_distributions(tasks_vars, tasks_cseps, domain=domain)
+            self.min_dist = max([self.tasks_min_dist[t] for t in range(self.total_task_num)])
             
-            self.print_to_log_file(f"initial means: {self.mus}")
-            self.print_to_log_file(f"initial vars: {self.sigs}")
-            self.print_to_log_file(f"min dist: {self.min_dist}")
-
-            if torch.cuda.is_available():
-                if isinstance(self.mus, list):
-                    for t in range(self.num_components):
-                        # self.print_to_log_file(f"prev size {t}: {[m.size() for m in self.mus[t]]}")
-                        self.mus[t] = self.mus[t].cuda()
-                        self.sigs[t] = self.sigs[t].cuda()
-                        self.weights[t] = self.weights[t].cuda()
-                else:
-                    self.mus = self.mus.cuda()
-                    self.sigs = self.sigs.cuda()
-                
-
             ##### END ####
             self.with_wandb = wandb.run is not None
             self.initialize_network()
+
+            #### Loss Function Inits ####
+            # Deep supervision loss
             mask = np.array([True] + [True if i < net_numpool - 1 else False for i in range(1, net_numpool)])
             weights[~mask] = 0
             weights = weights / weights.sum()
             self.ds_loss_weights = weights
-            self.ds_loss = DC_and_CE_loss({'batch_dice': self.batch_dice, 'smooth': 1e-5, 'do_bg': False}, {})
-            # self.main_loss = DynamicDistMatchingLoss(self.min_dist, loss_type=self.loss_type, with_wandb=self.with_wandb) # NOTE
             # self.ds_loss = DynamicDistMatchingLoss(self.min_dist, loss_type=self.loss_type, with_wandb=self.with_wandb) # NOTE
+            self.ds_loss = DC_and_CE_loss({'batch_dice': self.batch_dice, 'smooth': 1e-5, 'do_bg': False}, {})
+            
+            # Dice loss
+            dc_loss = SoftDiceLoss(apply_nonlin=lambda x: x, **{'batch_dice': self.batch_dice, 'smooth': 1e-5, 'do_bg': False}) # NOTE
+            # dc_loss = DC_and_CE_loss({'batch_dice': self.batch_dice, 'smooth': 1e-5, 'do_bg': False}, {})
+            # dc_loss.dc.apply_nonlin = lambda x: x
+            self.dc_loss = dc_loss
+            
+            # Main - dist matching, cross entropy loss
+            # self.main_loss = DynamicDistMatchingLoss(self.min_dist, loss_type=self.loss_type, with_wandb=self.with_wandb) # NOTE
+            self.main_loss = DynamicDistMatchingLoss(self.min_dist, loss_type=self.loss_type, do_bg=False, with_wandb=self.with_wandb) # NOTE
+            
             # self.loss = MixedDSLoss(main_loss=self.main_loss, ds_loss=self.ds_loss, weight_factors=self.ds_loss_weights)
             # self.loss = MultipleOutputLoss2(DC_and_CE_loss({'batch_dice': self.batch_dice, 'smooth': 1e-5, 'do_bg': False}, {}), self.ds_loss_weights)
-            self.ds_loss = DC_and_CE_loss({'batch_dice': self.batch_dice, 'smooth': 1e-5, 'do_bg': False}, {})
-            dc_loss = SoftDiceLoss(apply_nonlin=lambda x: x, **{'batch_dice': self.batch_dice, 'smooth': 1e-5, 'do_bg': False})
-            self.main_loss = DynamicDistMatchingLoss(self.min_dist, loss_type=self.loss_type, with_wandb=self.with_wandb) # NOTE
-            # self.ds_loss = DynamicDistMatchingLoss(self.min_dist, loss_type=self.loss_type, with_wandb=self.with_wandb) # NOTE
-            # self.loss = MixedDSLoss(main_loss=self.main_loss, ds_loss=self.ds_loss, weight_factors=self.ds_loss_weights)
             self.loss = MixedDSLoss(main_loss=self.main_loss, ds_loss=self.ds_loss, dice_loss=dc_loss, weight_factors=self.ds_loss_weights)
+            self.sanity_loss = MultipleOutputLoss2(loss=DC_and_CE_loss({'batch_dice': self.batch_dice, 'smooth': 1e-5, 'do_bg': False}, {}), weight_factors=self.ds_loss_weights)
+            
             self.initialize_optimizer_and_scheduler()
             # self.network = DDP(self.network, device_ids=[self.local_rank])
-            self.network.set_feature_space_distribution_parameters(self.mus, self.sigs)
-            self.network.construct_feature_space_gmm(self.mus, self.sigs)
+            # self.network.set_feature_space_distribution_parameters(self.mus, self.sigs)
+            
+            # self.network.construct_feature_space_gmm(self.mus, self.sigs)
+
+            for t in range(self.total_task_num):
+                self.network.construct_feature_space_gmm(self.tasks_mus[t], self.tasks_sigs[t], task=t)
+            
             # self.dynamic_dist_network = DDP(self.dynamic_dist_network, device_ids=[self.local_rank])
             self.update_target_dist = False
 
-            self.main_loss.dist_weights = self.weights
+            # self.main_loss.dist_weights = self.weights
+            self.main_loss.dist_weights = self.tasks_weights[0]
 
             # assert isinstance(self.network, (SegmentationNetwork, nn.DataParallel))
         else:
@@ -475,10 +498,19 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
             task_id = to_cuda(task_id, gpu_id=None)
             data = to_cuda(data, gpu_id=None)
             target = to_cuda(target, gpu_id=None) 
+
+        #     # check if device of mus/sigs
+        #     if not self.mus[0][0].is_cuda:
+        #         for t in range(self.num_components):
+        #             # self.print_to_log_file(f"prev size {t}: {[m.size() for m in self.mus[t]]}")
+        #             self.mus[t] = self.mus[t].cuda()
+        #             self.sigs[t] = self.sigs[t].cuda()
+        #             self.weights[t] = self.weights[t].cuda()
             
 
         print(f"recalc: {self.recalc_dist}")
         self.optimizer.zero_grad()
+        self.recalc_dist = False
         # if self.epoch > 0 and self.recalc_dist:# and (self.epoch + 1) % self.update_target_iter == 0:
         if self.epoch > 0 and self.recalc_dist:# and (self.epoch + 1) % self.update_target_iter == 0:
             self.recalc_targets()
@@ -496,35 +528,53 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
                 # output = self.network(data, task_id)
                 # tc_inds = copy.deepcopy(self.task_id_class_lst_mapping[int(task_id[0])])
                 # target_classes = target[0].unique().detach().cpu().numpy()
+                self.print_to_log_file(f"\ntask_id: {task_id}")
                 lst_target_classes = [target[i].unique().detach().cpu().numpy() for i in range(len(target))]
                 # lst_target_classes = [np.delete(target[i].unique().detach().cpu().numpy(), 0) for i in range(len(target))]
-                output, features, tc_inds = self.network(data, task_id=task_id, gt_seg=target, target_classes=lst_target_classes, update_target_dist=update_target_dist, for_loss=True)
+                # output, gt_extractions, tc_inds = self.network(data, task_id=task_id, gt_seg=target, target_classes=lst_target_classes, update_target_dist=update_target_dist, for_loss=True)
+                # output, gt_extractions, tc_inds, output_probs = self.network(data, task_id=task_id, gt_seg=target, target_classes=lst_target_classes, update_target_dist=update_target_dist, for_loss=True)
+                output, gt_extractions, tc_inds, output_probs, output_probs_softmax = self.network(data, task_id=task_id, gt_seg=target, target_classes=lst_target_classes, update_target_dist=update_target_dist, for_loss=True)
                 for out in range(len(output)):
                     output[out] = output[out][:, :self.task_class[int(task_id[0])]]
-                
+                # for out in range(len(output_probs_softmax)):
+                #     output_probs_softmax[out] = output_probs_softmax[out][:, :self.task_class[int(task_id[0])]]
+                for out in range(len(output_probs)):
+                    output_probs[out] = output_probs[out][:, :self.task_class[int(task_id[0])]]
                 
                 # l = self.loss(output, target) lst_extractions[0], self.mus, self.sigs, lst_tc_inds[0 means, covs, indices, handle_nan=False, return_est_dists=False, with_sep_loss=True)
                 # l = self.loss(output, target, features, self.mus, self.sigs, tc_inds, return_est_dists=False, handle_nan=False, with_sep_loss=False)
                 # l = self.loss.forward_ce_dc(output, target, features, self.mus, self.sigs, tc_inds, return_est_dists=False, handle_nan=False, with_sep_loss=False)
-                l = self.loss.forward_dist_dc_ds(output, target, features, tc_inds, self.mus, self.sigs, return_est_dists=False, handle_nan=False, with_sep_loss=False)
+                
+                tidx = int(task_id[0])
+                # self.loss.main_loss.dist_weights = self.tasks_weights[tidx]
+                # l = self.loss.forward_dist_dc_ds(output, target, features, tc_inds, self.mus, self.sigs, return_est_dists=False, handle_nan=False, with_sep_loss=False)
+                # l = self.loss.forward_dist_dc_ds(output, target, gt_extractions, tc_inds, self.tasks_mus[tidx], self.tasks_sigs[tidx], return_est_dists=False, handle_nan=False, with_sep_loss=False)
+                # l = self.loss.forward_ce_dc_ds(output, target, output_probs)
+
+                # wandb_log_outputs(data[0], features[0], output[0][0], None, target[0][0])
 
                 del data
-                self.print_to_log_file(f"task_id: {task_id}")
                 
+                
+                # Sanity check
+                # l = self.sanity_loss(output_probs_softmax, target)
+                l = self.sanity_loss(output_probs, target)
                 
                 # Test the dice score:
                 # if self.return_est_dists and self.epoch > 0:
                 #     # l, est_dists = l
-                #     with torch.no_grad():
-                #         # dc_score = self.dc_loss(est_seg.unsqueeze(1), target[0])
-                #         dc_score = self.dc_loss(output[0], target[0])
-                #         # self.print_to_log_file(f"Dice Score: {-dc_score.item()}")
-                #         if do_backprop:
-                #             if self.with_wandb: wandb.log({"train_dc": -dc_score.item()})
-                #             self.print_to_log_file(f"train_dc {-dc_score.item()}")
-                #         else:
-                #             if self.with_wandb: wandb.log({"val_dc": -dc_score.item()})
-                #             self.print_to_log_file(f"val_dc {-dc_score.item()}")
+                # with torch.no_grad():
+                #     # dc_score = self.dc_loss(est_seg.unsqueeze(1), target[0])
+                #     # dc_score = self.dc_loss(output[0], target[0])
+                #     dc_score = self.sanity_loss.loss.dc(output_probs_softmax[0], target[0])
+                #     # self.print_to_log_file(f"Dice Score: {-dc_score.item()}")
+                #     if do_backprop:
+                #         if self.with_wandb: wandb.log({"train_dc": -dc_score.item()})
+                #         self.print_to_log_file(f"train_dc {-dc_score.item()}")
+                #     else:
+                #         if self.with_wandb: wandb.log({"val_dc": -dc_score.item()})
+                #         self.print_to_log_file(f"val_dc {-dc_score.item()}")
+                
                 
                 if self.with_wandb:
                     wandb.log({"loss": l.item()})
@@ -532,57 +582,126 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
 
 
             if do_backprop:
-                # self.amp_grad_scaler.scale(l).backward(retain_graph=False) # NOTE
-                self.amp_grad_scaler.scale(l).backward(retain_graph=True) # NOTE
+                self.amp_grad_scaler.scale(l).backward(retain_graph=False) # NOTE
+                # self.amp_grad_scaler.scale(l).backward(retain_graph=True) # NOTE
                 self.amp_grad_scaler.unscale_(self.optimizer)
                 torch.nn.utils.clip_grad_norm_(self.network.parameters(), 12)
                 self.amp_grad_scaler.step(self.optimizer)
                 self.amp_grad_scaler.update()
                 # TAP
                 # if self.epoch > 0:
-                #     self.tap_amp_grad_scaler.scale(l).backward(retain_graph=True)
+                #     # self.tap_amp_grad_scaler.scale(l).backward(retain_graph=True)
+                #     self.tap_tasks_amp_grad_scaler[tidx].scale(l).backward(retain_graph=True)
 
-            else:
-                # self.tap.update_val_queues(features, tc_inds)
-                self.tap.update_val_queues(features[0], tc_inds[0])
+            # else:
+                # self.tap.update_val_queues(gt_extractions, tc_inds)
+                # self.tap.update_val_queues(gt_extractions[0], tc_inds[0], update_size=25) # NOTE not used
+                # self.task_taps[tidx].update_val_queues(gt_extractions[0], tc_inds[0], update_size=25)
+                # self.network.task_taps[tidx].update_val_queues(gt_extractions[0], tc_inds[0], update_size=200)
+            
 
         else:
             pass
 
         if run_online_evaluation:
-            self.run_online_evaluation(output, target)
+            # self.run_online_evaluation(output, target)
+            # self.run_online_evaluation(output_probs_softmax, target)
+            self.run_online_evaluation(output_probs, target)
 
         del target
 
         return l.detach().cpu().numpy()
 
     def recalc_targets(self):
-        component_optimal_ns = []
-        for t in range(self.num_components):
-            task_queue = self.network.tap.feature_space_qs[t] 
-            val_queue = self.tap.val_feature_space_qs[t] 
-            if len(task_queue) < 10:
+        task_class_optimal_ns = []
+        
+        for task_idx in range(self.total_task_num):
+            optimal_ns = self.recalc_task_targets(task_idx)
+            task_class_optimal_ns.append(optimal_ns)
+
+        # NOTE revise
+        # self.loss.main_loss.dist_weights = self.weights
+
+        # if self.n_iter_not_improved >= 0:
+        # if True:
+        if False:
+            # self.allocate_targets(component_optimal_ns)
+            for tidx in range(self.total_task_num):
+                # self.allocate_targets([10 for _ in range(self.num_components)], tidx)
+                self.allocate_targets([10 for _ in range(self.task_class[tidx])], tidx)
+
+            self.n_iter_not_improved = 0
+
+            self.recalced = True
+        # else:
+        #     # Prune
+        #     for task_idx in range(self.total_task_num):
+        #         component_optimal_ns = task_class_optimal_ns[task_idx]
+        #         # for c in range(self.num_components):
+        #         for c in range(self.task_class[task_idx]):
+        #             optimal_n = self.gmm_comps #component_optimal_ns[c]
+        #             self.tasks_mus[task_idx][c] = self.tasks_mus[task_idx][c][:optimal_n]
+        #             self.tasks_sigs[task_idx][c] = self.tasks_sigs[task_idx][c][:optimal_n]
+        #             self.tasks_weights[task_idx][c] = self.tasks_weights[task_idx][c][:optimal_n]
+                    
+            # for c in range(self.num_components):
+            #     optimal_n = component_optimal_ns[c]
+            #     self.mus[c] = self.mus[c][:optimal_n]
+            #     self.sigs[c] = self.sigs[c][:optimal_n]
+                
+            # self.network.set_feature_space_distribution_parameters(self.mus, self.sigs)
+            # self.network.weights = self.weights
+
+        for tidx in range(self.total_task_num):
+            self.network.set_feature_space_distribution_parameters(self.tasks_mus[tidx], self.tasks_sigs[tidx], self.tasks_weights[tidx], task=tidx)
+            # self.network.weights = self.weights
+
+        self.recalc_dist = False
+
+        # self.network.construct_feature_space_gmm_implicit()
+        for tidx in range(self.total_task_num):
+            self.network.construct_task_feature_space_gmm_implicit(tidx)
+
+    def recalc_task_targets(self, task_idx):
+        class_optimal_ns = []
+        # for class_idx in range(self.num_components):
+        for class_idx in range(self.task_class[task_idx]):
+            # task_class_queue = self.network.tap.feature_space_qs[class_idx] 
+            # task_class_val_queue = self.tap.val_feature_space_qs[class_idx] 
+            # task_class_val_queue = self.task_taps[task_idx].val_feature_space_qs[class_idx] 
+            task_class_queue = self.network.task_taps[task_idx].feature_space_qs[class_idx] 
+            task_class_val_queue = self.network.task_taps[task_idx].val_feature_space_qs[class_idx] 
+            # task_class_val_queue = self.network.task_taps[-1].val_feature_space_qs[class_idx] 
+            if len(task_class_queue) < 10:
                 continue
-            task_queue = torch.vstack(task_queue).detach().cpu().numpy()
-            val_queue = torch.vstack(val_queue).detach().cpu().numpy()
+            # task_class_queue = torch.vstack(task_class_queue).detach().cpu().numpy()
+            task_class_queue = torch.vstack(task_class_queue + task_class_val_queue).detach().cpu().numpy()
+            # task_class_queue = torch.vstack(task_class_val_queue).detach().cpu().numpy()
+            # task_class_val_queue = torch.vstack(task_class_val_queue).detach().cpu().numpy() if len(task_class_val_queue) > 10 else task_class_queue
             # self.network.gaussian_mixtures[t].fit(task_queue)
-            # momentum = 0.999
-            momentum = 0.995
+            momentum = 0.999
             # mu_hat_t = torch.from_numpy(self.network.gaussian_mixtures[t].means_).cuda()
             # sig_hat_t = torch.from_numpy(self.network.gaussian_mixtures[t].covariances_).cuda()
-            curr_num_comps = self.mus[t].shape[0]
-            min_comps, max_comps = max(1, curr_num_comps-1), min(self.max_gmm_comps, curr_num_comps+1)
+            # curr_num_comps = self.mus[class_idx].shape[0]
+            # curr_num_comps = self.tasks_mus[task_idx][class_idx].shape[0]
+            # min_comps, max_comps = max(1, curr_num_comps-1), min(self.max_gmm_comps, curr_num_comps+1)
             # best_gmm, optimal_n, bics = self.network.find_optimal_components(val_queue, min_components = min_comps, max_components=max_comps)
-            best_gmm, optimal_n, bics = self.network.fit_gmms(val_queue)
-            self.print_to_log_file(f"optimal num components {t}: {optimal_n}")
-            component_optimal_ns.append(optimal_n)
+            optimal_n = self.gmm_comps#10
+            self.print_to_log_file(f"optimal num components {class_idx}: {optimal_n}")
+            class_optimal_ns.append(optimal_n)
             if self.with_wandb:
-                wandb.log({f'{t}_opt_n': optimal_n})
+                # wandb.log({f'{class_idx}_opt_n': optimal_n})
+                wandb.log({f'{task_idx}_{class_idx}_opt_n': optimal_n})
             # best_gmm, _, _  = self.network.find_optimal_components(task_queue, min_components = optimal_n, max_components=optimal_n)
-            best_gmm, _, _  = self.network.fit_gmms(task_queue)
-            mu_hat_t = torch.from_numpy(best_gmm.means_).cuda()
-            sig_hat_t = torch.from_numpy(best_gmm.covariances_).cuda()
-            weights_hat_t = torch.from_numpy(best_gmm.weights_).cuda()
+            # best_gmm, _, _  = self.network.fit_gmms(task_class_queue)
+            # best_gmm, _, _  = self.network.fit_task_gmms(task_class_queue, task_idx)
+            best_gmm, _, _  = self.network.fit_task_gmms(task_class_queue, task_idx, class_idx)
+            mu_hat_c = torch.from_numpy(best_gmm.means_).cuda()
+            if best_gmm.covariance_type == "full":
+                sig_hat_c = torch.from_numpy(best_gmm.covariances_).cuda()
+            else:
+                sig_hat_c = torch.stack([torch.diag(d) for d in torch.from_numpy(best_gmm.covariances_).cuda()])
+            weights_hat_c = torch.from_numpy(best_gmm.weights_).cuda()
             new_mus, new_sigs = [], []
             new_weights = []
                 # also record mixture weights
@@ -590,7 +709,8 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
                 # set mean, cov
                 # self.mus[t] = mu_hat_t #(1 - momentum) * self.mus[t] + (momentum * mu_hat_t)
                 # self.sigs[t] = sig_hat_t.detach()#(1 - momentum) * self.sigs[t] + (momentum * sig_hat_t)
-            prev_comp_n = len(self.mus[t])
+            # prev_comp_n = len(self.mus[class_idx])
+            prev_comp_n = len(self.tasks_mus[class_idx])
                 # optimal_n = prev_comp_n
                 # component_optimal_ns.append(prev_comp_n)
                 # self.print_to_log_file(f"prev size: {[m.size() for m in self.mus[t]]}")
@@ -599,109 +719,145 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
             for comp_idx in range(self.max_gmm_comps):
                 if comp_idx >= optimal_n:
                     new_mus.append(torch.zeros(self.feature_space_dim).cuda())
-                    new_sigs.append(torch.zeros(self.feature_space_dim, self.feature_space_dim).cuda())
+                    new_sigs.append(torch.eye(self.feature_space_dim).cuda()) # NOTE
                     new_weights.append(torch.ones(1).cuda() / self.max_gmm_comps)
                 elif comp_idx >= prev_comp_n:
                         # self.print_to_log_file(f"res size {t} {comp_idx}: {torch.mean(self.mus[t], 0).size()}")
-                    new_mus.append((1 - momentum) * torch.mean(self.mus[t], 0) + (momentum * mu_hat_t[comp_idx]))
+                    # new_mus.append((1 - momentum) * torch.mean(self.mus[class_idx], 0) + (momentum * mu_hat_c[comp_idx]))
+                    new_mus.append((1 - momentum) * torch.mean(self.tasks_mus[task_idx][class_idx], 0) + (momentum * mu_hat_c[comp_idx]))
                         # new_sigs.append((1 - momentum) * torch.mean(self.sigs[t], 0) + (momentum * sig_hat_t[comp_idx]))
-                    new_sigs.append(sig_hat_t[comp_idx])
-                    new_weights.append((1 - momentum) * torch.mean(self.weights[t], 0) + (momentum * weights_hat_t[comp_idx]))
+                    new_sigs.append(sig_hat_c[comp_idx])
+                    # new_weights.append((1 - momentum) * torch.mean(self.weights[class_idx], 0) + (momentum * weights_hat_c[comp_idx]))
+                    new_weights.append((1 - momentum) * torch.mean(self.tasks_weights[task_idx][class_idx], 0) + (momentum * weights_hat_c[comp_idx]))
                 else:
                         # self.print_to_log_file(f"prev size {t} {comp_idx}: {self.mus[t][comp_idx].size()}")
                         # self.print_to_log_file(f"new size {t} {comp_idx}: {mu_hat_t[comp_idx].size()}")
-                    new_mus.append((1 - momentum) * self.mus[t][comp_idx] + (momentum * mu_hat_t[comp_idx]))
-                    new_sigs.append(sig_hat_t[comp_idx])
+                    # new_mus.append((1 - momentum) * self.mus[class_idx][comp_idx] + (momentum * mu_hat_c[comp_idx]))
+                    new_mus.append((1 - momentum) * self.tasks_mus[task_idx][class_idx][comp_idx] + (momentum * mu_hat_c[comp_idx]))
+                    new_sigs.append(sig_hat_c[comp_idx])
                         # new_sigs.append((1 - momentum) * self.sigs[t][comp_idx] + (momentum * sig_hat_t[comp_idx]))
                     # new_weights.append((1 - momentum) * self.weights[t][comp_idx] + (momentum * weights_hat_t[comp_idx]))
-                    new_weights.append(weights_hat_t[comp_idx])
+                    momentum_updated_weight_comp = (1 - momentum) * self.tasks_weights[task_idx][class_idx][comp_idx] + (momentum * weights_hat_c[comp_idx] )
+                    new_weights.append(momentum_updated_weight_comp)
+                    # new_weights.append(weights_hat_c[comp_idx])
 
                 if self.with_wandb:
+                    # wandb.log({
+                    #     f"em_mu_{class_idx}_{comp_idx}": new_mus[-1], 
+                    #     f"em_cov_{class_idx}_{comp_idx}": new_sigs[-1], 
+                    #     f"em_weight_{class_idx}_{comp_idx}": new_weights[-1]
+                    # })
+                    # self.print_to_log_file(f"em_weight_{class_idx}_{comp_idx}: {new_weights[-1]}")
                     wandb.log({
-                        f"em_mu_{t}_{comp_idx}": new_mus[-1], 
-                        f"em_cov_{t}_{comp_idx}": new_sigs[-1], 
-                        f"em_weight_{t}_{comp_idx}": new_weights[-1]
+                        f"em_{task_idx}_mu_{class_idx}_{comp_idx}": new_mus[-1], 
+                        f"em_{task_idx}_cov_{class_idx}_{comp_idx}": new_sigs[-1], 
+                        f"em_{task_idx}_weight_{class_idx}_{comp_idx}": new_weights[-1]
                     })
-                    self.print_to_log_file(f"em_weight_{t}_{comp_idx}: {new_weights[-1]}")
+                    self.print_to_log_file(f"em_{task_idx}_weight_{class_idx}_{comp_idx}: {new_weights[-1]}")
 
-            self.mus[t] = torch.vstack(new_mus).detach()
-            self.sigs[t] = torch.stack(new_sigs).detach()
-            self.weights[t] = torch.vstack(new_weights).detach().permute(1,0)
+            # self.mus[class_idx] = torch.vstack(new_mus).detach()
+            # self.sigs[class_idx] = torch.stack(new_sigs).detach()
+            # self.weights[class_idx] = torch.vstack(new_weights).detach().permute(1,0)
+            self.tasks_mus[task_idx][class_idx] = torch.vstack(new_mus).detach().clone()
+            self.tasks_sigs[task_idx][class_idx] = torch.stack(new_sigs).detach().clone()
+            self.tasks_weights[task_idx][class_idx] = torch.stack(new_weights).detach().clone()#.permute(1,0)
 
-            # self.sigs = new_sigs
-            # self.mus = new_mus
-            # for t in range(self.num_components):
-            #     self.print_to_log_file(f"new size {t} : {[m.size() for m in self.mus[t]]}")
+        return class_optimal_ns
 
-        self.loss.main_loss.dist_weights = self.weights
-        
-        # if self.n_iter_not_improved >= 2:
-        if self.n_iter_not_improved >= 0:
-        # if True:
-        # if False:
+    def allocate_targets(self, component_optimal_ns, task_idx):
+        # input_covs = []
+        # for cov_comp_set in self.sigs:
+        #     for cov in cov_comp_set:
+        #         # input_covs.append(torch.max(torch.real(torch.linalg.eigvals(cov))))
+        #         input_covs.append(torch.diagonal(cov)) # NOTE
 
-            self.allocate_targets(component_optimal_ns)
+        # input_covs = torch.stack(input_covs)
 
-            self.n_iter_not_improved = 0
-
-            self.recalced = True
-        else:
-            # Prune 
-            for c in range(self.num_components):
-                optimal_n = component_optimal_ns[c]
-                self.mus[c] = self.mus[c][:optimal_n]
-                self.sigs[c] = self.sigs[c][:optimal_n]
-                
-            self.network.set_feature_space_distribution_parameters(self.mus, self.sigs)
-            self.network.weights = self.weights
-
-        self.recalc_dist = False
-
-        self.network.construct_feature_space_gmm_implicit()
-
-    def allocate_targets(self, component_optimal_ns):
         input_covs = []
-        for cov_comp_set in self.sigs:
-            for cov in cov_comp_set:
-                input_covs.append(torch.max(torch.real(torch.linalg.eigvals(cov))))
+        # for cidx in range(self.num_components):
+        for cidx in range(self.task_class[task_idx]):
+            # comp_full_covs = self.sigs[cidx]
+            comp_full_covs = self.tasks_sigs[task_idx][cidx]
+            d_covs = []
+            for eidx in range(self.max_gmm_comps):
+                d = torch.diagonal(comp_full_covs[eidx])
+                d_covs.append(d)
+            input_covs.append(d_covs)
 
-        input_covs = torch.stack(input_covs)
         tc_inds = [0, 1, 2]
             # input_tc_inds = np.repeat(tc_inds, self.gmm_comps)
         # input_tc_inds = np.repeat(tc_inds, 10)
-        input_tc_inds = [list(range(self.max_gmm_comps)) for t in range(3)]
-        torch.autograd.set_detect_anomaly(True)
-        self.tap_optimizer.zero_grad()
-        for e in range(30):
+        # input_tc_inds = [list(range(self.max_gmm_comps)) for t in range(self.num_components)]
+        input_tc_inds = [list(range(self.max_gmm_comps)) for t in range(self.task_class[task_idx])]
+        # torch.autograd.set_detect_anomaly(True)
+        # self.tap_optimizer.zero_grad()
+        self.tap_tasks_optimizer[task_idx].zero_grad()
+        for e in range(15):
             # new_mus, new_covs = self.tap(self.mus, input_covs, input_tc_inds)
-            new_mus, new_covs = self.tap.forward_dedicated(self.mus, input_covs, input_tc_inds)
+            # new_mus, new_covs = self.tap.forward_dedicated(self.mus, input_covs, input_tc_inds)
+            # new_mus, new_covs = self.tap.forward_dedicated(self.mus, input_covs, input_tc_inds, with_update=True)
+            # new_mus, new_covs = self.task_taps[task_idx].forward_dedicated(self.tasks_mus[task_idx], input_covs, input_tc_inds, with_update=True)
+            new_mus, new_covs = self.network.task_taps[task_idx].forward_dedicated(self.tasks_mus[task_idx], input_covs, input_tc_inds, with_update=True)
                 # Prune the unneeded mus
             pruned_mus, pruned_covs = [], []
             em_mus, em_covs = [], []
-            for c in range(self.num_components):
+            # for c in range(self.num_components):
+            for c in range(self.task_class[task_idx]):
                 optimal_n = component_optimal_ns[c]
+                # keep_mus = new_mus[c*self.max_gmm_comps:c*self.max_gmm_comps + optimal_n]
+                # keep_covs = new_covs[c*self.max_gmm_comps:c*self.max_gmm_comps + optimal_n]
+                # pruned_mus.append(torch.vstack(keep_mus).reshape(optimal_n, self.feature_space_dim))
+                # pruned_covs.append(torch.stack(keep_covs).reshape(optimal_n, self.feature_space_dim, self.feature_space_dim).double())
+
                 keep_mus = new_mus[c*self.max_gmm_comps:c*self.max_gmm_comps + optimal_n]
                 keep_covs = new_covs[c*self.max_gmm_comps:c*self.max_gmm_comps + optimal_n]
-                pruned_mus.append(torch.vstack(keep_mus).reshape(optimal_n, self.feature_space_dim))
-                pruned_covs.append(torch.stack(keep_covs).reshape(optimal_n, self.feature_space_dim, self.feature_space_dim).double())
-                em_mus.append(self.mus[c][:optimal_n])
-                em_covs.append(self.sigs[c][:optimal_n])
+                keep_mus = torch.vstack(keep_mus).reshape(optimal_n, self.feature_space_dim)
+                keep_covs = torch.stack([torch.diag(d) for d in keep_covs])
+
+                pruned_mus.append(keep_mus)
+                pruned_covs.append(keep_covs.double())
+
+                # em_mus.append(self.mus[c][:optimal_n])
+                # em_covs.append(self.sigs[c][:optimal_n])
+                em_mus.append(self.tasks_mus[task_idx][c][:optimal_n])
+                em_covs.append(self.tasks_sigs[task_idx][c][:optimal_n])
 
             # l = self.main_loss.get_dynamic_sep_loss(new_mus, new_covs, self.min_dists, tc_inds, csep=self.csep) \
             # l = self.main_loss.get_non_uniform_dynamic_sep_loss(pruned_mus, pruned_covs, self.min_dists, csep=self.csep) \
             #         + 1 * component_wise_kl_div(self.mus, self.sigs, pruned_mus, pruned_covs)
-            l = self.main_loss.get_non_uniform_dynamic_sep_loss(pruned_mus, pruned_covs, self.min_dists, csep=self.csep) \
-                    + 1 * component_wise_kl_div(em_mus, em_covs, pruned_mus, pruned_covs)
+            dm_pen = pen_domain(pruned_mus, domain=self.domain)
+            tap_kl = component_wise_kl_div(em_mus, em_covs, pruned_mus, pruned_covs) 
+            if self.with_wandb:
+                wandb.log({"domain_pen": dm_pen})
+                wandb.log({"tap_kl": tap_kl})
+            self.print_to_log_file(f"domain pen {dm_pen}")
+            self.print_to_log_file(f"tap kl {tap_kl}")
+            # l = self.main_loss.get_non_uniform_dynamic_sep_loss(pruned_mus, pruned_covs, self.min_dists, csep=self.csep) + \
+            #         1.5 * component_wise_kl_div(em_mus, em_covs, pruned_mus, pruned_covs) + \
+            #         0.5 * dm_pen
+            l = self.main_loss.get_non_uniform_dynamic_sep_loss(pruned_mus, pruned_covs, self.tasks_min_dists[task_idx], csep=self.csep) + \
+                    0.5 * tap_kl + \
+                    0.5 * dm_pen
+            
             self.print_to_log_file(f"tap loss: {l}")
             if self.with_wandb:
                 wandb.log({"tap_loss": l})
-            if (e + 1) != 30:
-                self.tap_amp_grad_scaler.scale(l).backward(retain_graph=True)
-                self.tap_amp_grad_scaler.unscale_(self.tap_optimizer)
-                torch.nn.utils.clip_grad_norm_(self.tap.parameters(), 12)
-                self.tap_amp_grad_scaler.step(self.tap_optimizer)
-                self.tap_amp_grad_scaler.update()
-                self.tap_optimizer.zero_grad()
+            # if (e + 1) != 30:
+            # self.tap_amp_grad_scaler.scale(l).backward(retain_graph=True)
+            # self.tap_amp_grad_scaler.unscale_(self.tap_optimizer)
+            # # torch.nn.utils.clip_grad_norm_(self.tap.parameters(), 12)
+            # torch.nn.utils.clip_grad_norm_(self.task_taps[task_idx].parameters(), 12)
+            # self.tap_amp_grad_scaler.step(self.tap_optimizer)
+            # self.tap_amp_grad_scaler.update()
+            # self.tap_optimizer.zero_grad()
+            self.tap_tasks_amp_grad_scaler[task_idx].scale(l).backward(retain_graph=True)
+            self.tap_tasks_amp_grad_scaler[task_idx].unscale_(self.tap_tasks_optimizer[task_idx])
+            # torch.nn.utils.clip_grad_norm_(self.tap.parameters(), 12)
+            # torch.nn.utils.clip_grad_norm_(self.task_taps[task_idx].parameters(), 12)
+            torch.nn.utils.clip_grad_norm_(self.network.task_taps[task_idx].parameters(), 12)
+            self.tap_tasks_amp_grad_scaler[task_idx].step(self.tap_tasks_optimizer[task_idx])
+            self.tap_tasks_amp_grad_scaler[task_idx].update()
+            self.tap_tasks_optimizer[task_idx].zero_grad()
 
         pruned_mus_, pruned_covs_ = pruned_mus, pruned_covs
         # pruned_mus_, pruned_covs_ = [], []
@@ -712,7 +868,8 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
         #     pruned_covs_.append(pruned_covs_t)
             # Measure the adjustment:
             # mean_changes, cov_changes = measure_change(self.mus, self.sigs, new_mus, new_covs)
-        mean_changes, cov_changes = measure_change(self.mus, self.sigs, pruned_mus_, pruned_covs_)
+        # mean_changes, cov_changes = measure_change(self.mus, self.sigs, pruned_mus_, pruned_covs_)
+        mean_changes, cov_changes = measure_change(self.tasks_mus[task_idx], self.tasks_sigs[task_idx], pruned_mus_, pruned_covs_)
         for i, (mean_change, cov_change) in enumerate(zip(mean_changes, cov_changes)):
             self.print_to_log_file(f"mean[{i}] change: {mean_change}")
             self.print_to_log_file(f"cov[{i}] change: {cov_change}")
@@ -721,31 +878,46 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
                 wandb.log({f"cov_change[{i}]": cov_change})
             
             # self.mus, self.sigs = new_mus.detach(), new_covs.detach()
-        tap_momentum = 0.999 * (self.epoch / 50)
+        # tap_momentum = 0.999 * (self.epoch / 50)
+        tap_momentum = 0.999 * (1 - (self.epoch / self.max_num_epochs))
         updated_mus, updated_covs = [], []
-        for t in range(self.num_components):
+        # for t in range(self.num_components):
+        for t in range(self.task_class[task_idx]):
                 # self.mus[t], self.sigs[t] = new_mus[t].detach(), new_covs[t].detach()
                 # self.mus[t] = new_mus[t]
                 # self.mus[t] = (1 - tap_momentum) * self.mus[t][:component_optimal_ns[t]] + (tap_momentum * new_mus[t])
 
-            updated_mu = (1 - tap_momentum) * self.mus[t][:component_optimal_ns[t]] + (tap_momentum * pruned_mus_[t])
+            # updated_mu = (1 - tap_momentum) * self.mus[t][:component_optimal_ns[t]] + (tap_momentum * pruned_mus_[t])
+            updated_mu = (1 - tap_momentum) * self.tasks_mus[task_idx][t][:component_optimal_ns[t]] + (tap_momentum * pruned_mus_[t])
+            updated_mu = torch.clamp(updated_mu, min=self.domain[0], max=self.domain[1])
             self.print_to_log_file(f"fin updated mu: {updated_mu}")
             updated_mus.append(updated_mu)
+            # updated_mus.append(updated_mu.clone())
                 # self.mus[t] = (1 - tap_momentum) * self.mus[t] + (tap_momentum * pruned_mus[t])
                 # self.sigs[t] = new_covs[t]
                 # self.sigs[t] = (1 - tap_momentum) * self.sigs[t][:component_optimal_ns[t]] + (tap_momentum * new_covs[t])
-            updated_cov = (1 - tap_momentum) * self.sigs[t][:component_optimal_ns[t]] + (tap_momentum * pruned_covs_[t])
+            # updated_cov = (1 - tap_momentum) * self.sigs[t][:component_optimal_ns[t]] + (tap_momentum * pruned_covs_[t])
+            updated_cov = (1 - tap_momentum) * self.tasks_sigs[task_idx][t][:component_optimal_ns[t]] + (tap_momentum * pruned_covs_[t])
             self.print_to_log_file(f"fin updated cov: {updated_cov}")
             if not is_positive_definite(updated_cov):
-                updated_cov = self.sigs[t][:component_optimal_ns[t]]
+                # updated_cov = self.sigs[t][:component_optimal_ns[t]]
+                updated_cov = self.tasks_sigs[task_idx][t][:component_optimal_ns[t]]
             updated_covs.append(updated_cov)
+            # updated_covs.append(updated_cov.clone())
                 # self.sigs[t] = (1 - tap_momentum) * self.sigs[t] + (tap_momentum * pruned_covs[t])
 
-        self.mus, self.sigs = updated_mus, updated_covs
-        self.network.set_feature_space_distribution_parameters(updated_mus, updated_covs)
-        self.network.weights = self.weights
+        # self.mus, self.sigs = updated_mus, updated_covs
+        self.tasks_mus[task_idx], self.tasks_sigs[task_idx] = updated_mus, updated_covs
+        # self.network.set_feature_space_distribution_parameters(updated_mus, updated_covs, self.tasks_weights[task_idx], task=task_idx)
+        
+        # self.network.weights = self.weights
+        # self.choleskys = get_choleskys(self.sigs)
 
-        self.network.construct_feature_space_gmm_implicit()
+        # self.network.construct_feature_space_gmm_implicit()
+
+
+        # for tidx in range(self.total_task_num):
+        # self.network.construct_task_feature_space_gmm_implicit(task_idx)
 
 
     def get_basic_generators(self):
@@ -778,6 +950,7 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
             net = self.network
         ds = net.do_ds
         net.do_ds = False
+        # self.inference_apply_nonlin = lambda x: x
 
         current_mode = self.network.training
         self.network.eval()
@@ -1200,7 +1373,7 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
     def init_gmm_centers(self, centers, dim, ms, c, return_weights=False):
         K = self.gmm_comps
         N = len(centers)
-        s = 5
+        s = 1
         all_comp_centers = [[] for _ in range(N)]
         all_comp_centers_torch = [torch.empty(K, dim) for _ in range(N)]
         all_comp_covs_torch = [torch.empty(K, dim, dim) for _ in range(N)]
@@ -1208,7 +1381,7 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
         for i, center in enumerate(centers):
             m = ms[i]
             for k in range(K):
-                comp_cov = (np.power(m/(2*c), 2) / dim) * torch.eye(dim) + (1e-05*torch.eye(dim))
+                # comp_cov = (np.power(m/(2*c), 2) / dim) * torch.eye(dim) + (1e-05*torch.eye(dim))
                 comp_cov = (np.power((m * s / c), 2) / dim) * torch.eye(dim) + (1e-05*torch.eye(dim))
                 all_comp_covs_torch[i][k, :] = comp_cov
                 comp_center = np.random.uniform(center-(m/2), center+(m/2))
@@ -1236,82 +1409,68 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
         # comp_gmm = GaussianMixtureModel(weights, dists)
 
 
-    def init_from_fixed(self):
-        mus = [torch.Tensor([[-0.5395, -0.0668,  0.0751],
-        [-0.4004, -0.0370,  0.2684],
-        [-0.5072, -0.1627,  0.3345],
-        [-0.4651,  0.0898,  0.3048],
-        [-0.1087,  0.1977,  0.2530]]), torch.Tensor([[ 0.9034, -0.6443,  0.8015],
-        [ 0.8188, -0.6842,  0.6880],
-        [ 0.7842, -0.4100,  0.7769],
-        [ 0.5642, -0.5596,  0.8316],
-        [ 0.6712, -0.6173,  0.9445]]), torch.Tensor([[-0.8129, -0.9852, -0.2697],
-        [-1.1029, -0.8532, -0.2032],
-        [-1.1436, -1.2126, -0.2086],
-        [-0.8065, -0.8981, -0.3438],
-        [-1.1126, -0.8964, -0.1714]])] 
-
-        sigs = [torch.Tensor([[[0.0083, 0.0000, 0.0000],
-            [0.0000, 0.0083, 0.0000],
-            [0.0000, 0.0000, 0.0083]],
-
-            [[0.0083, 0.0000, 0.0000],
-            [0.0000, 0.0083, 0.0000],
-            [0.0000, 0.0000, 0.0083]],
-
-            [[0.0083, 0.0000, 0.0000],
-            [0.0000, 0.0083, 0.0000],
-            [0.0000, 0.0000, 0.0083]],
-
-            [[0.0083, 0.0000, 0.0000],
-            [0.0000, 0.0083, 0.0000],
-            [0.0000, 0.0000, 0.0083]],
-
-            [[0.0083, 0.0000, 0.0000],
-            [0.0000, 0.0083, 0.0000],
-            [0.0000, 0.0000, 0.0083]]]), torch.Tensor([[[0.0083, 0.0000, 0.0000],
-            [0.0000, 0.0083, 0.0000],
-            [0.0000, 0.0000, 0.0083]],
-
-            [[0.0083, 0.0000, 0.0000],
-            [0.0000, 0.0083, 0.0000],
-            [0.0000, 0.0000, 0.0083]],
-
-            [[0.0083, 0.0000, 0.0000],
-            [0.0000, 0.0083, 0.0000],
-            [0.0000, 0.0000, 0.0083]],
-
-            [[0.0083, 0.0000, 0.0000],
-            [0.0000, 0.0083, 0.0000],
-            [0.0000, 0.0000, 0.0083]],
-
-            [[0.0083, 0.0000, 0.0000],
-            [0.0000, 0.0083, 0.0000],
-            [0.0000, 0.0000, 0.0083]]]), torch.Tensor([[[0.0083, 0.0000, 0.0000],
-            [0.0000, 0.0083, 0.0000],
-            [0.0000, 0.0000, 0.0083]],
-
-            [[0.0083, 0.0000, 0.0000],
-            [0.0000, 0.0083, 0.0000],
-            [0.0000, 0.0000, 0.0083]],
-
-            [[0.0083, 0.0000, 0.0000],
-            [0.0000, 0.0083, 0.0000],
-            [0.0000, 0.0000, 0.0083]],
-
-            [[0.0083, 0.0000, 0.0000],
-            [0.0000, 0.0083, 0.0000],
-            [0.0000, 0.0000, 0.0083]],
-
-            [[0.0083, 0.0000, 0.0000],
-            [0.0000, 0.0083, 0.0000],
-            [0.0000, 0.0000, 0.0083]]])] 
-
-        return mus, sigs
-
     def init_uniform_mixture_weights(self):
         weights = []
         for _ in range(self.num_components):
-            weights.append(torch.ones(self.gmm_comps)/(self.gmm_comps))
+            weights.append(torch.ones(self.gmm_comps)/self.gmm_comps)
 
         return weights
+
+
+    def init_task_distribution(self, vars, csep, num_classes, domain=[-1, 1]):
+
+        print(f"{vars}, {csep}, {self.feature_space_dim}")
+        min_dists = [csep * np.sqrt(self.feature_space_dim * v) for i, v in enumerate(vars)]
+        # self.min_dists = min_dists
+        print(f"{min_dists}")
+        
+        max_trys = 15000
+        for t in range(max_trys):
+            if t % 100 == 0: print(t)
+            try:
+                # centers = self.init_centers(self.num_components, self.feature_space_dim, min_dists, sort=False)
+                centers = self.init_centers(num_classes, self.feature_space_dim, min_dists, domain=domain, sort=False)
+                break
+            except ValueError:
+                pass
+
+        mus, sigs = self.init_gmm_centers(centers, self.feature_space_dim, min_dists, csep)
+        weights = self.init_uniform_mixture_weights()
+
+        return mus, sigs, weights, min_dists
+
+    def init_all_distributions(self, tasks_vars, tasks_cseps, domain=[-1, 1]):
+        
+        tasks_mus, tasks_sigs, tasks_weights, tasks_min_dists, tasks_min_dist = [], [], [], [], []
+        for task_id in range(self.total_task_num):
+            task_num_classes = self.task_class[task_id]
+            task_mus, task_sigs, task_weights, min_dists = self.init_task_distribution(tasks_vars[task_id], tasks_cseps[task_id], task_num_classes, domain=domain)
+
+            self.print_to_log_file(f"task {task_id} initial means: {task_mus}")
+            self.print_to_log_file(f"task {task_id} initial vars: {task_sigs}")
+            self.print_to_log_file(f"task {task_id} initial weights: {task_weights}")
+            self.print_to_log_file(f"task {task_id} min dists: {min_dists}")
+
+            # move to cuda
+            if torch.cuda.is_available():
+                if isinstance(task_mus, list):
+                    # for class_idx in range(self.num_components):
+                    for class_idx in range(self.task_class[task_id]):
+                        # self.print_to_log_file(f"prev size {t}: {[m.size() for m in self.mus[t]]}")
+                        task_mus[class_idx] = task_mus[class_idx].cuda()
+                        task_sigs[class_idx] = task_sigs[class_idx].cuda()
+                        task_weights[class_idx] = task_weights[class_idx].cuda()
+                        # self.choleskys[t] = self.choleskys[t].cuda()
+                else:
+                    task_mus = task_mus.cuda()
+                    task_sigs = task_sigs.cuda()
+
+            tasks_mus.append(task_mus)
+            tasks_sigs.append(task_sigs)
+            tasks_weights.append(task_weights)
+            tasks_min_dists.append(min_dists)
+            tasks_min_dist.append(max(min_dists))
+
+        return tasks_mus, tasks_sigs, tasks_weights, tasks_min_dists, tasks_min_dist
+
+    

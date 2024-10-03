@@ -98,6 +98,29 @@ def extract_task_set(batched_input, batched_gt, task_id, keep_dims=False):
     
     return extraction_set.mean(dim=0)
 
+def extract_correct_task_set(batched_input, batched_gt, batched_seg, task_id, keep_dims=False):
+    while batched_input.shape[-3:] != batched_gt.shape[-3:] and batched_input.size(1) == 1:
+        batched_input = F.interpolate(batched_input, scale_factor=(2, 2, 2), mode='trilinear')
+
+    msk = batched_seg == batched_gt
+    # print(f"tot num correct: {torch.sum(msk)}")
+    extraction_set = []
+    for i in range(batched_input.size(0)):
+        extraction_voxels = torch.argwhere(batched_gt[i, 0] == task_id)
+        
+        correct_region = msk[i, :, extraction_voxels[:, 0], extraction_voxels[:, 1], extraction_voxels[:, 2]] #, pos_voxels[:, 2]]
+        candidate_extreactions = batched_input[i, :, extraction_voxels[:, 0], extraction_voxels[:, 1], extraction_voxels[:, 2]] #, pos_voxels[:, 2]]
+        # print(f"num correct: {torch.sum(correct_region)}")
+        extraction = candidate_extreactions[:, correct_region[0, :]]
+        extraction_set.append(extraction)
+    extraction_set = torch.concat(extraction_set, -1)    
+
+    if keep_dims: 
+        return extraction_set
+    
+    return extraction_set.mean(dim=0)
+
+
 def kl_divs(dists, target_means, target_covs):
 
     kls = []
@@ -218,7 +241,7 @@ def measure_change(means, covs, new_means, new_covs):
             cov_c = new_covs[p][c]
 
             mean_changes.append(torch.norm(means[p][c] - mean_c, 2))
-            cov_changes.append(riemannian_distance(covs[p][c], cov_c))
+            cov_changes.append(riemannian_distance(covs[p][c].float(), cov_c.float()))
 
     return mean_changes, cov_changes
 
@@ -240,6 +263,29 @@ def est_dist_sep_loss(est_means, min_dist, wrt_target=False, **kwargs):
         return est_sep, est_sep - sep(kwargs['mus'], min_dist)
         
     return est_sep
+
+def pen_domain(cls_means, domain=[-1, 1]):
+    total = 0
+    for i, means in enumerate(cls_means):
+        total = total + penalize_out_of_domain(means, domain=domain)
+
+    return total
+        
+
+def penalize_out_of_domain(means, domain=[-1, 1]):
+
+    lower = means < domain[0]
+    if torch.sum(lower) > 0:
+        lower_diff_mean = torch.mean(torch.abs(domain[0] - means[lower]))
+    else :
+        lower_diff_mean = 0
+    higher = means > domain[1]
+    if torch.sum(higher) > 0:
+        higher_diff_mean = torch.mean(torch.abs(domain[1] - means[higher]))
+    else :
+        higher_diff_mean = 0
+
+    return 0.5 * (lower_diff_mean + higher_diff_mean)
     
 if __name__ == "__main__":
     # Test

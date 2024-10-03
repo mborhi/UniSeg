@@ -41,6 +41,7 @@ from datetime import datetime
 from tqdm import trange
 from nnunet.utilities.to_torch import maybe_to_torch, to_cuda
 import wandb
+import copy
 
 class NetworkTrainer(object):
     def __init__(self, deterministic=True, fp16=False):
@@ -302,9 +303,12 @@ class NetworkTrainer(object):
             for c in range(self.num_components):
                 save_this[f'Q{c}'] = self.dynamic_dist_network.feature_space_qs[c]
 
-        save_this["target_mus"] = self.mus 
-        save_this["target_sigs"] = self.sigs
-        save_this["target_weights"] = self.weights
+        # save_this["target_mus"] = self.mus 
+        # save_this["target_sigs"] = self.sigs
+        # save_this["target_weights"] = self.weights
+        save_this["target_mus"] = self.tasks_mus 
+        save_this["target_sigs"] = self.tasks_sigs
+        save_this["target_weights"] = self.tasks_weights
         save_this["min_dist"] = self.min_dist
         
         if self.amp_grad_scaler is not None:
@@ -430,7 +434,11 @@ class NetworkTrainer(object):
         # self.print_to_log_file(self.mus, self.sigs)
         if isinstance(self.network, TAPFeatureExtractor_DP):
             for c in range(self.num_components):
-                self.network.tap.feature_space_qs[c] = checkpoint[f'Q{c}']
+                saved_q_c = checkpoint[f'Q{c}']
+                if torch.cuda.is_available():
+                    self.network.tap.feature_space_qs[c] = [e.cuda() for e in saved_q_c]
+                else:
+                    self.network.tap.feature_space_qs[c] = saved_q_c
         elif isinstance(self.network, DataParallel):
             pass 
         else:
@@ -439,15 +447,15 @@ class NetworkTrainer(object):
                 self.dynamic_dist_network.feature_space_qs[c] = checkpoint[f'Q{c}']
 
         # Train feature space gmm
-        if isinstance(self.network, TAPFeatureExtractor_DP):
-            self.network.train_gmms(self.network.tap.feature_space_qs, self.mus, self.sigs)
-            pass 
-        elif isinstance(self.network, DDP):
-            self.network.module.train_gmms(self.dynamic_dist_network.feature_space_qs, self.mus, self.sigs)
-        elif isinstance(self.network, DataParallel):
-            pass 
-        else:
-            self.network.train_gmms(self.dynamic_dist_network.feature_space_qs, self.mus, self.sigs)
+        # if isinstance(self.network, TAPFeatureExtractor_DP):
+        #     self.network.train_gmms(self.network.tap.feature_space_qs, self.mus, self.sigs)
+        #     pass 
+        # elif isinstance(self.network, DDP):
+        #     self.network.module.train_gmms(self.dynamic_dist_network.feature_space_qs, self.mus, self.sigs)
+        # elif isinstance(self.network, DataParallel):
+        #     pass 
+        # else:
+        #     self.network.train_gmms(self.dynamic_dist_network.feature_space_qs, self.mus, self.sigs)
 
         # after the training is done, the epoch is incremented one more time in my old code. This results in
         # self.epoch = 1001 for old trained models when the epoch is actually 1000. This causes issues because
@@ -468,6 +476,9 @@ class NetworkTrainer(object):
         if self.fp16 and self.amp_grad_scaler is None:
             self.amp_grad_scaler = GradScaler()
             self.tap_amp_grad_scaler = GradScaler()
+            self.tap_tasks_amp_grad_scaler = [None for _ in range(self.total_task_num)]
+            for t in range(self.total_task_num):
+                self.tap_tasks_amp_grad_scaler[t] = GradScaler()
 
     def plot_network_architecture(self):
         """
@@ -535,15 +546,22 @@ class NetworkTrainer(object):
                     # if _ == 10: break # NOTE
 
             # if self.epoch > 0 and (self.epoch + 1) % self.update_target_iter == 0:
+            # if self.epoch > 0: #and self.recalced and (self.epoch + 1) % self.update_target_iter == 0:
             if self.epoch > 0 and self.recalced and (self.epoch + 1) % self.update_target_iter == 0:
-                self.tap_amp_grad_scaler.unscale_(self.tap_optimizer)
-                torch.nn.utils.clip_grad_norm_(self.tap.parameters(), 12)
-                self.tap_amp_grad_scaler.step(self.tap_optimizer)
-                self.tap_amp_grad_scaler.update()
-                self.tap_optimizer.zero_grad()
+                # self.tap_amp_grad_scaler.unscale_(self.tap_optimizer)
+                # torch.nn.utils.clip_grad_norm_(self.tap.parameters(), 12)
+                # self.tap_amp_grad_scaler.step(self.tap_optimizer)
+                # self.tap_amp_grad_scaler.update()
+                # self.tap_optimizer.zero_grad()
+                for tidx in range(self.total_task_num):
+                    self.tap_tasks_amp_grad_scaler[tidx].unscale_(self.tap_tasks_optimizer[tidx])
+                    # torch.nn.utils.clip_grad_norm_(self.tap.parameters(), 12)
+                    self.tap_tasks_amp_grad_scaler[tidx].step(self.tap_tasks_optimizer[tidx])
+                    self.tap_tasks_amp_grad_scaler[tidx].update()
+                    self.tap_tasks_optimizer[tidx].zero_grad()
                 self.recalced = False
-                self.mus = [m.detach() for m in self.mus]
-                self.sigs = [s.detach() for s in self.sigs]
+                # self.mus = [m.detach() for m in self.mus]
+                # self.sigs = [s.detach() for s in self.sigs]
 
                 just_updated = True
 
@@ -588,7 +606,8 @@ class NetworkTrainer(object):
 
             if self.all_val_eval_metrics[-1] > self.best_val_eval_metric:
                 if isinstance(self.network, TAPFeatureExtractor_DP):
-                    self.network.tap.best_feature_space_qs = self.network.tap.feature_space_qs
+                    # self.network.tap.best_feature_space_qs = self.network.tap.feature_space_qs
+                    self.network.tap.best_feature_space_qs = copy.deepcopy(self.network.tap.feature_space_qs)
                 elif isinstance(self.network, DataParallel) and isinstance(self.dynamic_dist_network, DataParallel):
                     self.best_feature_space_qs = self.feature_space_qs
                 elif isinstance(self.network, DataParallel):
@@ -608,7 +627,7 @@ class NetworkTrainer(object):
 
             if self.epoch + 1 == self.max_num_epochs:
                 if isinstance(self.network, TAPFeatureExtractor_DP):
-                    self.network.tap.feature_space_qs = self.network.tap.best_feature_space_qs
+                    self.network.tap.feature_space_qs = copy.deepcopy(self.network.tap.best_feature_space_qs)
                 elif isinstance(self.dynamic_dist_network, DataParallel):
                     self.feature_space_qs = self.best_feature_space_qs
                 elif isinstance(self.network, DataParallel):
