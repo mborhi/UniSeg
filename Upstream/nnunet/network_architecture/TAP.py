@@ -38,10 +38,12 @@ class TAP(nn.Module):
             self.create_mod_list(feature_space_dim, gmm_comps) for _ in range(num_components)
         ])
 
+        # NOTE changed to scalar out
         self.sig_mods = nn.ModuleList([
             # self.create_mod(feature_space_dim, gmm_comps) for _ in range(num_components)
             # self.create_mod_(feature_space_dim, gmm_comps) for _ in range(num_components)
             self.create_mod_list(feature_space_dim, gmm_comps) for _ in range(num_components)
+            # self.create_mod_list(feature_space_dim, gmm_comps, scalar_out=True) for _ in range(num_components)
         ])
         
         self.task_mu_modules = nn.ModuleList([
@@ -129,7 +131,9 @@ class TAP(nn.Module):
 
         return mod
     
-    def create_mod_list(self, feature_space_dim, gmm_comps):
+    def create_mod_list(self, feature_space_dim, gmm_comps, scalar_out=False):
+        final_out_size = feature_space_dim if not scalar_out else 1
+        # final_act = nn.Tanh() if not scalar_out else nn.ReLU()
         mod = nn.ModuleList([
             nn.ModuleList([
                 # eig(\Sigma_tc) + \mu_tc + t + c
@@ -138,8 +142,10 @@ class TAP(nn.Module):
                 nn.PReLU(), 
                 nn.Linear(256, 128),
                 nn.PReLU(), 
-                nn.Linear(128, feature_space_dim),
+                nn.Linear(128, final_out_size),
+                # nn.Linear(128, feature_space_dim),
                 nn.Tanh(), 
+                # final_act,
             ])
             for t in range(gmm_comps)
             # for t in range(1)
@@ -235,14 +241,17 @@ class TAP(nn.Module):
 
                 if with_update:
 
-                    updated_mean_t_c = (1 - self.momentum) *  means[t][c] + (self.momentum * mu_hat_t_c)
-                    # updated_var_t_c = (1 - self.momentum) * vars[self.gmm_comps * t + c] + (self.momentum * sigma_hat_t_c) + 0.0001 # for numerical stability
-                    updated_var_t_c = (1 - self.momentum) * vars[t][c] + (self.momentum * sigma_hat_t_c) + 0.0001 # for numerical stability
+                    # updated_mean_t_c = (1 - self.momentum) *  means[t][c] + (self.momentum * mu_hat_t_c)
+                    # # updated_var_t_c = (1 - self.momentum) * vars[self.gmm_comps * t + c] + (self.momentum * sigma_hat_t_c) + 0.0001 # for numerical stability
+                    # updated_var_t_c = (1 - self.momentum) * vars[t][c] + (self.momentum * sigma_hat_t_c) + 0.0001 # for numerical stability
 
                     updated_mean_t_c = means[t][c] + mu_hat_t_c
                     mu_hats.append(updated_mean_t_c) 
 
+                    # NOTE 
                     updated_var_t_c = vars[t][c] + sigma_hat_t_c + 1e-04
+                    # updated_var_t_c = sigma_hat_t_c * vars[t][c] + 1e-04
+                    # updated_var_t_c = vars[t][c] #+ sigma_hat_t_c + 1e-04
                     sigma_hats.append(updated_var_t_c)
                 else :
                     # torch.diag(updated_var_t_c)
@@ -282,7 +291,7 @@ class TAP(nn.Module):
             # input = torch.cat((input_means, input_vars, task_id), -1).to(dtype=torch.float16)
             input = torch.cat((input_means, input_vars, task_id), -1).to(dtype=torch.float32)
             mu_hat_t = torch.mean(self.task_mu_modules[t](input), dim=0) # averaged along batch
-            sigma_hat_t = torch.mean(self.task_sigma_modules[t](input), dim=0) # averaged along batch
+            sigma_hat_t = torch.mean(self.task_sigma_modules[t](input), dim=0) # averaged along batch # NOTE
             # mu_hat_t = torch.mean(self.task_mu_modules[0](input), dim=0) # averaged along batch
 
             if with_momentum_update:

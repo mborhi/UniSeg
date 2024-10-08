@@ -363,7 +363,8 @@ class UniSeg_model(Generic_UNet):
 
         # NOTE 
         # feature_space_dim = 1 #base_num_features * 2 #NOTE
-        feature_space_dim = 3 #base_num_features * 2 #NOTE
+        # feature_space_dim = 3 #base_num_features * 2 #NOTE
+        feature_space_dim = num_classes #base_num_features * 2 #NOTE
         # feature_space_dim = 8 #base_num_features * 2 #NOTE
         output_features = base_num_features
         input_features = input_channels
@@ -898,9 +899,9 @@ class TAPFeatureExtractor_DP(UniSeg_model):
         self.num_tasks = num_tasks
         # self.tap = DynamicDistributionModel_DP(feature_space_dim, int(self.intermediate_prompt.numel() / self.num_class), num_classes, momentum=0.99, queue_size=5000, gmm_comps=gmm_comps)
         # self.feature_space_dim, self.num_components, 0.995, queue_size=5000, gmm_comps = self.max_gmm_comps
-        self.tap = TAP(feature_space_dim, num_classes, num_tasks, momentum=0.99, queue_size=5000, gmm_comps=10)
+        # self.tap = TAP(feature_space_dim, num_classes, num_tasks, momentum=0.99, queue_size=5000, gmm_comps=10)
 
-        self.gaussian_mixtures = [GaussianMixture(gmm_comps, tol=1e-4) for i in range(num_classes)]
+        # self.gaussian_mixtures = [GaussianMixture(gmm_comps, tol=1e-4) for i in range(num_classes)]
         self.mus = None 
         self.covs = None
 
@@ -933,7 +934,7 @@ class TAPFeatureExtractor_DP(UniSeg_model):
         self.task_id_class_lst_mapping = task_id_class_lst_mapping
         self.with_wandb = with_wandb
         
-        self.var_gmm = BayesianGaussianMixture(n_components=10, covariance_type="diag", warm_start=True, max_iter=30, random_state=42)
+        # self.var_gmm = BayesianGaussianMixture(n_components=10, covariance_type="diag", warm_start=True, max_iter=30, random_state=42)
         # self.var_gmm = BayesianGaussianMixture(n_components=10, covariance_type="full", warm_start=True, max_iter=30, random_state=42)
 
         # self.task_var_gmms = [
@@ -942,8 +943,8 @@ class TAPFeatureExtractor_DP(UniSeg_model):
         # ]
         self.task_var_gmms = [
             [ # NOTE
-            BayesianGaussianMixture(n_components=10, covariance_type="diag", warm_start=True, max_iter=400, random_state=42)
-            # BayesianGaussianMixture(n_components=gmm_comps, covariance_type="full", warm_start=True, max_iter=100)
+            # BayesianGaussianMixture(n_components=gmm_comps, covariance_type="diag", warm_start=True, max_iter=400, random_state=42)
+            BayesianGaussianMixture(n_components=gmm_comps, covariance_type="full", warm_start=True, max_iter=400)
             for _ in range(self.task_to_num_classes[tidx])
             # for _ in range(num_classes)
             ]
@@ -1034,12 +1035,12 @@ class TAPFeatureExtractor_DP(UniSeg_model):
 
         # NOTE
         # extract + permute dims for DP 
-        lst_gt_extractions = []
-        for i, feature in enumerate(features): # for each level of the deep supervision
-            gt_extractions = [extract_task_set(feature, gt_seg[i], c, keep_dims=True).permute(1, 0) for c in target_classes[i]]
-            lst_gt_extractions.append(gt_extractions)
+        # lst_gt_extractions = []
+        # for i, feature in enumerate(features): # for each level of the deep supervision
+        #     gt_extractions = [extract_task_set(feature, gt_seg[i], c, keep_dims=True).permute(1, 0) for c in target_classes[i]]
+        #     lst_gt_extractions.append(gt_extractions)
         
-        tc_inds = self.update_queues(lst_gt_extractions, target_classes, task_id, update_size=25, task_specific=True)
+        # tc_inds = self.update_queues(lst_gt_extractions, target_classes, task_id, update_size=25, task_specific=True)
         # self.adjust_dist_params(tp_feats, task_id, tc_inds)
 
         # seg = self.full_segment(features[0], task_id)
@@ -1054,13 +1055,13 @@ class TAPFeatureExtractor_DP(UniSeg_model):
         # tc_inds = target_classes 
         # lst_gt_extractions = segs
         
-        # lst_gt_correct_extractions = []
-        # for i, feature in enumerate(features):
-        #     gt_correct_extractions = [extract_correct_task_set(feature, gt_seg[i], c, segs[i], keep_dims=True).permute(1, 0) for c in target_classes[i]]
-        #     lst_gt_correct_extractions.append(gt_correct_extractions)
+        lst_gt_correct_extractions = []
+        for i, feature in enumerate(features):
+            gt_correct_extractions = [extract_correct_task_set(feature, gt_seg[i], c, segs[i], keep_dims=True).permute(1, 0) for c in target_classes[i]]
+            lst_gt_correct_extractions.append(gt_correct_extractions)
 
-        # lst_gt_extractions = lst_gt_correct_extractions # NOTE
-        # tc_inds = self.update_queues(lst_gt_correct_extractions, target_classes, task_id, task_specific=True, update_size=25)
+        lst_gt_extractions = lst_gt_correct_extractions # NOTE
+        tc_inds = self.update_queues(lst_gt_correct_extractions, target_classes, task_id, task_specific=True, update_size=25)
         
         # return features, lst_gt_extractions[0], tc_inds
         # return features, lst_gt_extractions, tc_inds
@@ -1343,7 +1344,7 @@ class TAPFeatureExtractor_DP(UniSeg_model):
             feature_log_probs = self.feature_space_gmm.score(bview_features, component_indices=component_indices)
         
         # feature_log_probs = feature_log_probs.reshape(b, h, w, d, len(component_indices)).permute(0, 4, 1, 2, 3)
-        feature_log_probs = feature_log_probs.reshape(b, h, w, d, len(component_indices)).permute(0, 4, 1, 2, 3)
+        feature_log_probs = feature_log_probs.reshape(b, h, w, d, len(component_indices)).permute(0, 4, 1, 2, 3) # len(component_indices) = num_classes for given task
 
         if len(component_indices) < self.num_classes:
             # add dummy

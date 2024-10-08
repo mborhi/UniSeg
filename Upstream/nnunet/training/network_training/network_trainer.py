@@ -264,9 +264,9 @@ class NetworkTrainer(object):
         state_dict = self.network.state_dict()
         for key in state_dict.keys():
             state_dict[key] = state_dict[key].cpu()
-        tap_state_dict = self.tap.state_dict()
-        for key in tap_state_dict.keys():
-            tap_state_dict[key] = tap_state_dict[key].cpu()
+        # tap_state_dict = self.tap.state_dict()
+        # for key in tap_state_dict.keys():
+        #     tap_state_dict[key] = tap_state_dict[key].cpu()
         lr_sched_state_dct = None
         if self.lr_scheduler is not None and hasattr(self.lr_scheduler,
                                                      'state_dict'):  # not isinstance(self.lr_scheduler, lr_scheduler.ReduceLROnPlateau):
@@ -276,7 +276,10 @@ class NetworkTrainer(object):
             #    lr_sched_state_dct[key] = lr_sched_state_dct[key]
         if save_optimizer:
             optimizer_state_dict = self.optimizer.state_dict()
-            tap_optimizer_state_dict = self.tap_optimizer.state_dict()
+            # tap_optimizer_state_dict = self.tap_optimizer.state_dict()
+            tap_optimizers_state_dicts = []
+            for tidx in range(self.total_task_num):
+                tap_optimizers_state_dicts.append(self.tap_tasks_optimizer[tidx].state_dict())
         else:
             optimizer_state_dict = None
             tap_optimizer_state_dict = None
@@ -286,19 +289,22 @@ class NetworkTrainer(object):
             'epoch': self.epoch + 1,
             'state_dict': state_dict,
             'optimizer_state_dict': optimizer_state_dict,
-            'tap_optimizer_state_dict': tap_optimizer_state_dict,
+            'tap_optimizers_state_dicts': tap_optimizers_state_dicts,
             'lr_scheduler_state_dict': lr_sched_state_dct,
             'plot_stuff': (self.all_tr_losses, self.all_val_losses, self.all_val_losses_tr_mode,
                            self.all_val_eval_metrics),
             'best_stuff' : (self.best_epoch_based_on_MA_tr_loss, self.best_MA_tr_loss_for_patience, self.best_val_eval_criterion_MA),
-            'tap_state_dict': tap_state_dict
+            # 'tap_state_dict': tap_state_dict
         }
         if isinstance(self.network, DataParallel):
             for c in range(self.num_components):
                 save_this[f'Q{c}'] = self.network.module.feature_space_qs[c]
         elif isinstance(self.network, TAPFeatureExtractor_DP):
-            for c in range(self.num_components):
-                save_this[f'Q{c}'] = self.network.tap.feature_space_qs[c]
+            # for c in range(self.num_components):
+            #     save_this[f'Q{c}'] = self.network.tap.feature_space_qs[c]
+            for task_idx in range(self.total_task_num):
+                for cls_idx in range(self.task_class[task_idx]):
+                    save_this[f'Q_{task_idx}_{cls_idx}'] = self.network.task_taps[task_idx].feature_space_qs[cls_idx]
         else :
             for c in range(self.num_components):
                 save_this[f'Q{c}'] = self.dynamic_dist_network.feature_space_qs[c]
@@ -313,8 +319,14 @@ class NetworkTrainer(object):
         
         if self.amp_grad_scaler is not None:
             save_this['amp_grad_scaler'] = self.amp_grad_scaler.state_dict()
-        if self.tap_amp_grad_scaler is not None:
-            save_this['tap_amp_grad_scaler'] = self.tap_amp_grad_scaler.state_dict()
+        # if self.tap_amp_grad_scaler is not None:
+        #     save_this['tap_amp_grad_scaler'] = self.tap_amp_grad_scaler.state_dict()
+        for tsk_idx in range(self.total_task_num):
+            if self.tap_tasks_amp_grad_scaler[tsk_idx] is not None:
+                save_this[f'tap_{tsk_idx}_amp_grad_scaler'] = self.tap_tasks_amp_grad_scaler[tsk_idx].state_dict()
+        
+        # if self.tap_amp_grad_scaler is not None:
+        #     save_this['tap_amp_grad_scaler'] = self.tap_amp_grad_scaler.state_dict()
 
         torch.save(save_this, fname)
         self.print_to_log_file("done, saving took %.2f seconds" % (time() - start_time))
@@ -387,26 +399,34 @@ class NetworkTrainer(object):
             if key not in curr_state_dict_keys and key.startswith('module.'):
                 key = key[7:]
             new_state_dict[key] = value
-        new_tap_state_dict = OrderedDict()
-        curr_tap_state_dict_keys = list(self.tap.state_dict().keys())
+        # new_tap_state_dict = OrderedDict()
+        # curr_tap_state_dict_keys = list(self.tap.state_dict().keys())
         # if state dict comes from nn.DataParallel but we use non-parallel model here then the state dict keys do not
         # match. Use heuristic to make it match
-        for k, value in checkpoint['tap_state_dict'].items():
-            key = k
-            if key not in curr_tap_state_dict_keys and key.startswith('module.'):
-                key = key[7:]
-            new_tap_state_dict[key] = value
+        # for k, value in checkpoint['tap_state_dict'].items():
+        #     key = k
+        #     if key not in curr_tap_state_dict_keys and key.startswith('module.'):
+        #         key = key[7:]
+        #     new_tap_state_dict[key] = value
+
+        # new_task_tap_state_dicts = [OrderedDict() for _ in range(self.total_task_num)]
+        # for tidx in range(self.total_task_num):
+        #     curr = list(self.network.task_taps[tidx].state_dict().keys())
+        #     for k, value in checkpoint['']
 
         if self.fp16:
             self._maybe_init_amp()
             if train:
                 if 'amp_grad_scaler' in checkpoint.keys():
                     self.amp_grad_scaler.load_state_dict(checkpoint['amp_grad_scaler'])
-                if 'tap_amp_grad_scaler' in checkpoint.keys():
-                    self.tap_amp_grad_scaler.load_state_dict(checkpoint['tap_amp_grad_scaler'])
+                # if 'tap_amp_grad_scaler' in checkpoint.keys():
+                #     self.tap_amp_grad_scaler.load_state_dict(checkpoint['tap_amp_grad_scaler'])
+                for tsk_idx in range(self.total_task_num):
+                    if f'tap_{tsk_idx}_amp_grad_scaler' in checkpoint.keys():
+                        self.tap_tasks_amp_grad_scaler[tsk_idx].load_state_dict(checkpoint[f'tap_{tsk_idx}_amp_grad_scaler'])
 
         self.network.load_state_dict(new_state_dict)
-        self.tap.load_state_dict(new_tap_state_dict)
+        # self.tap.load_state_dict(new_tap_state_dict)
         self.epoch = checkpoint['epoch']
         if train:
             optimizer_state_dict = checkpoint['optimizer_state_dict']
@@ -419,6 +439,11 @@ class NetworkTrainer(object):
 
             if issubclass(self.lr_scheduler.__class__, _LRScheduler):
                 self.lr_scheduler.step(self.epoch)
+
+            tap_optimizers_state_dicts = checkpoint['tap_optimizers_state_dicts']
+            for tidx, tap_opt_state_dict in enumerate(tap_optimizers_state_dicts):
+                if tap_opt_state_dict is not None:
+                    self.tap_tasks_optimizer[tidx].load_state_dict(tap_opt_state_dict)
 
         self.all_tr_losses, self.all_val_losses, self.all_val_losses_tr_mode, self.all_val_eval_metrics = checkpoint[
             'plot_stuff']
@@ -433,12 +458,15 @@ class NetworkTrainer(object):
         self.weights = checkpoint['target_weights']
         # self.print_to_log_file(self.mus, self.sigs)
         if isinstance(self.network, TAPFeatureExtractor_DP):
-            for c in range(self.num_components):
-                saved_q_c = checkpoint[f'Q{c}']
-                if torch.cuda.is_available():
-                    self.network.tap.feature_space_qs[c] = [e.cuda() for e in saved_q_c]
-                else:
-                    self.network.tap.feature_space_qs[c] = saved_q_c
+            for t in range(self.total_task_num):
+                for c in range(self.task_class[t]):
+                    saved_q_c = checkpoint[f'Q_{t}_{c}']
+                    if torch.cuda.is_available():
+                        # self.network.tap.feature_space_qs[c] = [e.cuda() for e in saved_q_c]
+                        self.network.task_taps[t].feature_space_qs[c] = [e.cuda() for e in saved_q_c]
+                    else:
+                        # self.network.tap.feature_space_qs[c] = saved_q_c
+                        self.network.task_taps[t].feature_space_qs[c] = saved_q_c
         elif isinstance(self.network, DataParallel):
             pass 
         else:
@@ -546,8 +574,8 @@ class NetworkTrainer(object):
                     # if _ == 10: break # NOTE
 
             # if self.epoch > 0 and (self.epoch + 1) % self.update_target_iter == 0:
-            # if self.epoch > 0: #and self.recalced and (self.epoch + 1) % self.update_target_iter == 0:
-            if self.epoch > 0 and self.recalced and (self.epoch + 1) % self.update_target_iter == 0:
+            if self.epoch > 0: #and self.recalced and (self.epoch + 1) % self.update_target_iter == 0:
+            # if self.epoch > 0 and self.recalced and (self.epoch + 1) % self.update_target_iter == 0:
                 # self.tap_amp_grad_scaler.unscale_(self.tap_optimizer)
                 # torch.nn.utils.clip_grad_norm_(self.tap.parameters(), 12)
                 # self.tap_amp_grad_scaler.step(self.tap_optimizer)
@@ -555,7 +583,9 @@ class NetworkTrainer(object):
                 # self.tap_optimizer.zero_grad()
                 for tidx in range(self.total_task_num):
                     self.tap_tasks_amp_grad_scaler[tidx].unscale_(self.tap_tasks_optimizer[tidx])
-                    # torch.nn.utils.clip_grad_norm_(self.tap.parameters(), 12)
+                    # torch.nn.utils.clip_grad_norm_(self.tap.parameters(), 24) # NOTE doesn't work (I think)
+                    # torch.nn.utils.clip_grad_norm_(self.tap.parameters(), 12) # NOTE
+                    torch.nn.utils.clip_grad_norm_(self.network.task_taps[tidx].parameters(), 12) # NOTE
                     self.tap_tasks_amp_grad_scaler[tidx].step(self.tap_tasks_optimizer[tidx])
                     self.tap_tasks_amp_grad_scaler[tidx].update()
                     self.tap_tasks_optimizer[tidx].zero_grad()
@@ -607,7 +637,8 @@ class NetworkTrainer(object):
             if self.all_val_eval_metrics[-1] > self.best_val_eval_metric:
                 if isinstance(self.network, TAPFeatureExtractor_DP):
                     # self.network.tap.best_feature_space_qs = self.network.tap.feature_space_qs
-                    self.network.tap.best_feature_space_qs = copy.deepcopy(self.network.tap.feature_space_qs)
+                    for tidx in range(self.total_task_num):
+                        self.network.task_taps[tidx].best_feature_space_qs = copy.deepcopy(self.network.task_taps[tidx].feature_space_qs)
                 elif isinstance(self.network, DataParallel) and isinstance(self.dynamic_dist_network, DataParallel):
                     self.best_feature_space_qs = self.feature_space_qs
                 elif isinstance(self.network, DataParallel):
@@ -625,15 +656,17 @@ class NetworkTrainer(object):
                 self.n_iter_not_improved += 1
 
 
-            if self.epoch + 1 == self.max_num_epochs:
-                if isinstance(self.network, TAPFeatureExtractor_DP):
-                    self.network.tap.feature_space_qs = copy.deepcopy(self.network.tap.best_feature_space_qs)
-                elif isinstance(self.dynamic_dist_network, DataParallel):
-                    self.feature_space_qs = self.best_feature_space_qs
-                elif isinstance(self.network, DataParallel):
-                    self.dynamic_dist_network.use_best_feature_space_qs()
-                else:
-                    self.network.use_best_feature_space_qs()
+            # if self.epoch + 1 == self.max_num_epochs:
+            #     if isinstance(self.network, TAPFeatureExtractor_DP):
+            #         self.network.tap.feature_space_qs = copy.deepcopy(self.network.tap.best_feature_space_qs)
+            #         for tidx in range(self.total_task_num):
+            #             self.network.task_taps[tidx].feature_space_qs = copy.deepcopy(self.network.task_taps[tidx].best_feature_space_qs)
+            #     elif isinstance(self.dynamic_dist_network, DataParallel):
+            #         self.feature_space_qs = self.best_feature_space_qs
+            #     elif isinstance(self.network, DataParallel):
+            #         self.dynamic_dist_network.use_best_feature_space_qs()
+            #     else:
+            #         self.network.use_best_feature_space_qs()
 
             # else:# self.epoch + 1 < self.max_num_epochs:
             #     if isinstance(self.dynamic_dist_network, DataParallel):

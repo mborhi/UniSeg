@@ -38,6 +38,7 @@ from nnunet.training.loss_functions.dice_loss import DC_and_CE_loss, SoftDiceLos
 from torch.nn.parallel import DistributedDataParallel as DDP
 from nnunet.utilities.sep import component_wise_kl_div, measure_change, is_positive_definite, pen_domain
 from nnunet.utilities.gmm import get_choleskys
+from nnunet.utilities.preloaded_targets import get_targets
 from nnunet.utilities.wandb_util import wandb_log_outputs
 from nnunet.utilities.tensor_utilities import sum_tensor
 import copy 
@@ -51,20 +52,20 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
         super().__init__(plans_file, fold, output_folder, dataset_directory, batch_dice, stage, unpack_data,
                          deterministic, fp16)
         self.max_num_epochs = max_num_epochs
-        # self.task = {"live":0, "kidn":1, "hepa":2, "panc":3, "colo":4, "lung":5, "sple":6, "sub-":7, "pros":8, "BraT":9}
-        # self.task_class = {0: 3, 1: 3, 2: 3, 3: 3, 4: 2, 5: 2, 6: 2, 7: 2, 8: 2, 9: 4}
-        # self.task_id_class_lst_mapping = {
-        #     0: [0, 1, 2], 
-        #     1: [0, 3, 4], 
-        #     2: [0, 5, 6], 
-        #     3: [0, 7, 8], 
-        #     4: [0, 9], 
-        #     5: [0, 10], 
-        #     6: [0, 11], 
-        #     7: [0, 12], 
-        #     8: [0, 13], 
-        #     9: [0, 14, 15, 16], 
-        # }
+        self.task = {"live":0, "kidn":1, "hepa":2, "panc":3, "colo":4, "lung":5, "sple":6, "sub-":7, "pros":8, "BraT":9}
+        self.task_class = {0: 3, 1: 3, 2: 3, 3: 3, 4: 2, 5: 2, 6: 2, 7: 2, 8: 2, 9: 4}
+        self.task_id_class_lst_mapping = {
+            0: [0, 1, 2], 
+            1: [0, 1, 2], 
+            2: [0, 1, 2],
+            3: [0, 1, 2],
+            4: [0, 1], 
+            5: [0, 1],
+            6: [0, 1],
+            7: [0, 1],
+            8: [0, 1],
+            9: [0, 1, 2, 3], 
+        }
         # self.task = {"live":0, "kidn":1, "hepa":2, "panc":3, "colo":4, "lung":5, "sple":6, "sub-":7, "pros":8}
         # self.task_class = {0: 3, 1: 3, 2: 3, 3: 3, 4: 2, 5: 2, 6: 2, 7: 2, 8: 2}
         # self.task_id_class_lst_mapping = {
@@ -86,14 +87,14 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
         #     2: [0, 3], 
         #     3: [0, 4, 5], 
         # }
-        self.task = {"pros":0, "lung":1, "sple":2, "live":3}
-        self.task_class = {0: 2, 1: 2, 2: 2, 3: 3}
-        self.task_id_class_lst_mapping = {
-            0: [0, 1], 
-            1: [0, 1], 
-            2: [0, 1], 
-            3: [0, 1, 2], 
-        }
+        # self.task = {"pros":0, "lung":1, "sple":2, "live":3}
+        # self.task_class = {0: 2, 1: 2, 2: 2, 3: 3}
+        # self.task_id_class_lst_mapping = {
+        #     0: [0, 1], 
+        #     1: [0, 1], 
+        #     2: [0, 1], 
+        #     3: [0, 1, 2], 
+        # }
         # self.task = {"pros":0, "lung":1, "sple":2, "live":3}
         # self.task_class = {0: 1, 1: 1, 2: 1, 3: 2}
         # self.task_id_class_lst_mapping = {
@@ -117,8 +118,8 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
         self.visual_epoch = -1
         self.total_task_num = len(self.task.keys()) if not single_task else 1 # NOTE
         self.batch_size = batch_size
-        self.num_batches_per_epoch = (50 * self.total_task_num) // (num_gpus * (self.batch_size // 2)) #int((50 // num_gpus) * self.total_task_num)
-        # self.num_batches_per_epoch = (5 * self.total_task_num) // (num_gpus * self.batch_size) #int((50 // num_gpus) * self.total_task_num)
+        # self.num_batches_per_epoch = (50 * self.total_task_num) #// (num_gpus * (self.batch_size // 2)) #int((50 // num_gpus) * self.total_task_num)
+        self.num_batches_per_epoch = (3 * self.total_task_num) #// (num_gpus * self.batch_size) #int((50 // num_gpus) * self.total_task_num)
         # self.num_val_batches_per_epoch = self.num_batches_per_epoch // self.total_task_num#// 5
         print("num batches per epoch:", self.num_batches_per_epoch)
         # print("num batches per val epoch:", self.num_val_batches_per_epoch)
@@ -207,7 +208,7 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
                                         )
         # self.tap = TAP(self.feature_space_dim, self.num_components, 0.995, queue_size=5000, gmm_comps = self.gmm_comps)
         # self.tap = TAP(self.feature_space_dim, self.num_components, 0.995, queue_size=5000, gmm_comps = 10)
-        self.tap = TAP(self.feature_space_dim, self.num_components, self.total_task_num, 0.995, queue_size=5000, gmm_comps = self.max_gmm_comps)
+        # self.tap = TAP(self.feature_space_dim, self.num_components, self.total_task_num, 0.995, queue_size=5000, gmm_comps = self.max_gmm_comps)
         # self.task_taps = [
         #     TAP(self.feature_space_dim, self.num_components, self.total_task_num, 0.995, queue_size=5000, gmm_comps = self.max_gmm_comps)
         #     for _ in range(self.total_task_num)
@@ -231,14 +232,14 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
                                                         patience=self.lr_scheduler_patience,
                                                         verbose=True, threshold=self.lr_scheduler_eps,
                                                         threshold_mode="abs")
-        self.tap_optimizer = torch.optim.Adam(self.tap.parameters(), self.initial_lr, weight_decay=self.weight_decay,
-                                        amsgrad=True)
+        # self.tap_optimizer = torch.optim.Adam(self.tap.parameters(), self.initial_lr, weight_decay=self.weight_decay,
+        #                                 amsgrad=True)
         # self.tap_optimizer = torch.optim.Adam(itertools.chain(*(tp.parameters() for tp in self.task_taps)), self.initial_lr, weight_decay=self.weight_decay,
         #                                 amsgrad=True)
-        self.tap_lr_scheduler = lr_scheduler.ReduceLROnPlateau(self.tap_optimizer, mode='min', factor=0.2,
-                                                        patience=self.lr_scheduler_patience,
-                                                        verbose=True, threshold=self.lr_scheduler_eps,
-                                                        threshold_mode="abs")
+        # self.tap_lr_scheduler = lr_scheduler.ReduceLROnPlateau(self.tap_optimizer, mode='min', factor=0.2,
+        #                                                 patience=self.lr_scheduler_patience,
+        #                                                 verbose=True, threshold=self.lr_scheduler_eps,
+        #                                                 threshold_mode="abs")
         self.tap_tasks_optimizer = [None for _ in range(self.total_task_num)]
         self.tap_tasks_lr_scheduler = [None for _ in range(self.total_task_num)]
         for t in range(self.total_task_num):
@@ -366,7 +367,8 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
             """
 
             # Current best
-            vars = [1/30, 1/30, 1/30]
+            # vars = [1/30, 1/30, 1/30]
+            vars = [1/30, 1/30, 1/30, 1/30]
             csep = 1.5
             self.csep = csep
             domain = [-1,1]
@@ -415,7 +417,9 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
             tasks_vars = [vars for _ in range(self.total_task_num)]
             tasks_cseps = [csep for _ in range(self.total_task_num)]
 
-            self.tasks_mus, self.tasks_sigs, self.tasks_weights, self.tasks_min_dists, self.tasks_min_dist = self.init_all_distributions(tasks_vars, tasks_cseps, domain=domain)
+            # self.tasks_mus, self.tasks_sigs, self.tasks_weights, self.tasks_min_dists, self.tasks_min_dist = self.init_all_distributions(tasks_vars, tasks_cseps, domain=domain, **{"center_method": "optim"})
+            self.tasks_mus, self.tasks_sigs, self.tasks_weights, self.tasks_min_dists, self.tasks_min_dist = self.init_all_distributions(tasks_vars, tasks_cseps, domain=domain, **{"center_method": "partition"})
+            # self.tasks_mus, self.tasks_sigs, self.tasks_weights, self.tasks_min_dists, self.tasks_min_dist = get_targets()
             self.min_dist = max([self.tasks_min_dist[t] for t in range(self.total_task_num)])
             
             ##### END ####
@@ -510,7 +514,7 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
 
         print(f"recalc: {self.recalc_dist}")
         self.optimizer.zero_grad()
-        self.recalc_dist = False
+        # self.recalc_dist = False
         # if self.epoch > 0 and self.recalc_dist:# and (self.epoch + 1) % self.update_target_iter == 0:
         if self.epoch > 0 and self.recalc_dist:# and (self.epoch + 1) % self.update_target_iter == 0:
             self.recalc_targets()
@@ -534,8 +538,8 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
                 # output, gt_extractions, tc_inds = self.network(data, task_id=task_id, gt_seg=target, target_classes=lst_target_classes, update_target_dist=update_target_dist, for_loss=True)
                 # output, gt_extractions, tc_inds, output_probs = self.network(data, task_id=task_id, gt_seg=target, target_classes=lst_target_classes, update_target_dist=update_target_dist, for_loss=True)
                 output, gt_extractions, tc_inds, output_probs, output_probs_softmax = self.network(data, task_id=task_id, gt_seg=target, target_classes=lst_target_classes, update_target_dist=update_target_dist, for_loss=True)
-                for out in range(len(output)):
-                    output[out] = output[out][:, :self.task_class[int(task_id[0])]]
+                # for out in range(len(output)):
+                #     output[out] = output[out][:, :self.task_class[int(task_id[0])]]
                 # for out in range(len(output_probs_softmax)):
                 #     output_probs_softmax[out] = output_probs_softmax[out][:, :self.task_class[int(task_id[0])]]
                 for out in range(len(output_probs)):
@@ -582,22 +586,22 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
 
 
             if do_backprop:
-                self.amp_grad_scaler.scale(l).backward(retain_graph=False) # NOTE
-                # self.amp_grad_scaler.scale(l).backward(retain_graph=True) # NOTE
+                # self.amp_grad_scaler.scale(l).backward(retain_graph=False) # NOTE
+                self.amp_grad_scaler.scale(l).backward(retain_graph=True) # NOTE
                 self.amp_grad_scaler.unscale_(self.optimizer)
                 torch.nn.utils.clip_grad_norm_(self.network.parameters(), 12)
                 self.amp_grad_scaler.step(self.optimizer)
                 self.amp_grad_scaler.update()
                 # TAP
-                # if self.epoch > 0:
-                #     # self.tap_amp_grad_scaler.scale(l).backward(retain_graph=True)
-                #     self.tap_tasks_amp_grad_scaler[tidx].scale(l).backward(retain_graph=True)
+                if self.epoch > 0:
+                    # self.tap_amp_grad_scaler.scale(l).backward(retain_graph=True)
+                    self.tap_tasks_amp_grad_scaler[tidx].scale(l).backward(retain_graph=True)
 
             # else:
-                # self.tap.update_val_queues(gt_extractions, tc_inds)
-                # self.tap.update_val_queues(gt_extractions[0], tc_inds[0], update_size=25) # NOTE not used
-                # self.task_taps[tidx].update_val_queues(gt_extractions[0], tc_inds[0], update_size=25)
-                # self.network.task_taps[tidx].update_val_queues(gt_extractions[0], tc_inds[0], update_size=200)
+            #     # self.tap.update_val_queues(gt_extractions, tc_inds)
+            #     # self.tap.update_val_queues(gt_extractions[0], tc_inds[0], update_size=25) # NOTE not used
+            #     # self.task_taps[tidx].update_val_queues(gt_extractions[0], tc_inds[0], update_size=25)
+            #     self.network.task_taps[tidx].update_val_queues(gt_extractions[0], tc_inds[0], update_size=20)
             
 
         else:
@@ -623,12 +627,12 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
         # self.loss.main_loss.dist_weights = self.weights
 
         # if self.n_iter_not_improved >= 0:
-        # if True:
-        if False:
+        if True:
+        # if False:
             # self.allocate_targets(component_optimal_ns)
             for tidx in range(self.total_task_num):
                 # self.allocate_targets([10 for _ in range(self.num_components)], tidx)
-                self.allocate_targets([10 for _ in range(self.task_class[tidx])], tidx)
+                self.allocate_targets([self.max_gmm_comps for _ in range(self.task_class[tidx])], tidx)
 
             self.n_iter_not_improved = 0
 
@@ -674,12 +678,14 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
             # task_class_val_queue = self.network.task_taps[-1].val_feature_space_qs[class_idx] 
             if len(task_class_queue) < 10:
                 continue
-            # task_class_queue = torch.vstack(task_class_queue).detach().cpu().numpy()
-            task_class_queue = torch.vstack(task_class_queue + task_class_val_queue).detach().cpu().numpy()
+            task_class_queue = torch.vstack(task_class_queue).detach().cpu().numpy()
+            # task_class_queue = torch.vstack(task_class_queue + task_class_val_queue).detach().cpu().numpy()
             # task_class_queue = torch.vstack(task_class_val_queue).detach().cpu().numpy()
             # task_class_val_queue = torch.vstack(task_class_val_queue).detach().cpu().numpy() if len(task_class_val_queue) > 10 else task_class_queue
             # self.network.gaussian_mixtures[t].fit(task_queue)
-            momentum = 0.999
+            # momentum = 0.1 * (1 - (self.epoch / self.max_num_epochs))
+            momentum = 0.1 #* (1 - (self.epoch / self.max_num_epochs))
+            # momentum = 0.1 * (self.epoch / self.max_num_epochs)
             # mu_hat_t = torch.from_numpy(self.network.gaussian_mixtures[t].means_).cuda()
             # sig_hat_t = torch.from_numpy(self.network.gaussian_mixtures[t].covariances_).cuda()
             # curr_num_comps = self.mus[class_idx].shape[0]
@@ -687,7 +693,6 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
             # min_comps, max_comps = max(1, curr_num_comps-1), min(self.max_gmm_comps, curr_num_comps+1)
             # best_gmm, optimal_n, bics = self.network.find_optimal_components(val_queue, min_components = min_comps, max_components=max_comps)
             optimal_n = self.gmm_comps#10
-            self.print_to_log_file(f"optimal num components {class_idx}: {optimal_n}")
             class_optimal_ns.append(optimal_n)
             if self.with_wandb:
                 # wandb.log({f'{class_idx}_opt_n': optimal_n})
@@ -722,7 +727,6 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
                     new_sigs.append(torch.eye(self.feature_space_dim).cuda()) # NOTE
                     new_weights.append(torch.ones(1).cuda() / self.max_gmm_comps)
                 elif comp_idx >= prev_comp_n:
-                        # self.print_to_log_file(f"res size {t} {comp_idx}: {torch.mean(self.mus[t], 0).size()}")
                     # new_mus.append((1 - momentum) * torch.mean(self.mus[class_idx], 0) + (momentum * mu_hat_c[comp_idx]))
                     new_mus.append((1 - momentum) * torch.mean(self.tasks_mus[task_idx][class_idx], 0) + (momentum * mu_hat_c[comp_idx]))
                         # new_sigs.append((1 - momentum) * torch.mean(self.sigs[t], 0) + (momentum * sig_hat_t[comp_idx]))
@@ -730,8 +734,6 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
                     # new_weights.append((1 - momentum) * torch.mean(self.weights[class_idx], 0) + (momentum * weights_hat_c[comp_idx]))
                     new_weights.append((1 - momentum) * torch.mean(self.tasks_weights[task_idx][class_idx], 0) + (momentum * weights_hat_c[comp_idx]))
                 else:
-                        # self.print_to_log_file(f"prev size {t} {comp_idx}: {self.mus[t][comp_idx].size()}")
-                        # self.print_to_log_file(f"new size {t} {comp_idx}: {mu_hat_t[comp_idx].size()}")
                     # new_mus.append((1 - momentum) * self.mus[class_idx][comp_idx] + (momentum * mu_hat_c[comp_idx]))
                     new_mus.append((1 - momentum) * self.tasks_mus[task_idx][class_idx][comp_idx] + (momentum * mu_hat_c[comp_idx]))
                     new_sigs.append(sig_hat_c[comp_idx])
@@ -742,12 +744,6 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
                     # new_weights.append(weights_hat_c[comp_idx])
 
                 if self.with_wandb:
-                    # wandb.log({
-                    #     f"em_mu_{class_idx}_{comp_idx}": new_mus[-1], 
-                    #     f"em_cov_{class_idx}_{comp_idx}": new_sigs[-1], 
-                    #     f"em_weight_{class_idx}_{comp_idx}": new_weights[-1]
-                    # })
-                    # self.print_to_log_file(f"em_weight_{class_idx}_{comp_idx}: {new_weights[-1]}")
                     wandb.log({
                         f"em_{task_idx}_mu_{class_idx}_{comp_idx}": new_mus[-1], 
                         f"em_{task_idx}_cov_{class_idx}_{comp_idx}": new_sigs[-1], 
@@ -778,11 +774,16 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
         for cidx in range(self.task_class[task_idx]):
             # comp_full_covs = self.sigs[cidx]
             comp_full_covs = self.tasks_sigs[task_idx][cidx]
-            d_covs = []
+            e_covs = []
             for eidx in range(self.max_gmm_comps):
-                d = torch.diagonal(comp_full_covs[eidx])
-                d_covs.append(d)
-            input_covs.append(d_covs)
+                # if self.network.task_taps[task_idx][eidx].covariance_type == "full":
+                if self.network.task_var_gmms[task_idx][cidx].covariance_type == "full":
+                    # cov_eigvals = torch.real(torch.linalg.eigvals(comp_full_covs[eidx])) # sanity, eigvals should be real already
+                    cov_eigvals = torch.diagonal(comp_full_covs[eidx])
+                else:
+                    cov_eigvals = torch.diagonal(comp_full_covs[eidx])
+                e_covs.append(cov_eigvals)
+            input_covs.append(e_covs)
 
         tc_inds = [0, 1, 2]
             # input_tc_inds = np.repeat(tc_inds, self.gmm_comps)
@@ -792,7 +793,9 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
         # torch.autograd.set_detect_anomaly(True)
         # self.tap_optimizer.zero_grad()
         self.tap_tasks_optimizer[task_idx].zero_grad()
+        # for e in range(20):
         for e in range(15):
+        # for e in range(40):
             # new_mus, new_covs = self.tap(self.mus, input_covs, input_tc_inds)
             # new_mus, new_covs = self.tap.forward_dedicated(self.mus, input_covs, input_tc_inds)
             # new_mus, new_covs = self.tap.forward_dedicated(self.mus, input_covs, input_tc_inds, with_update=True)
@@ -879,7 +882,8 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
             
             # self.mus, self.sigs = new_mus.detach(), new_covs.detach()
         # tap_momentum = 0.999 * (self.epoch / 50)
-        tap_momentum = 0.999 * (1 - (self.epoch / self.max_num_epochs))
+        tap_momentum = 1 - (self.epoch / self.max_num_epochs)
+        # tap_momentum = 0.1
         updated_mus, updated_covs = [], []
         # for t in range(self.num_components):
         for t in range(self.task_class[task_idx]):
@@ -907,7 +911,8 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
                 # self.sigs[t] = (1 - tap_momentum) * self.sigs[t] + (tap_momentum * pruned_covs[t])
 
         # self.mus, self.sigs = updated_mus, updated_covs
-        self.tasks_mus[task_idx], self.tasks_sigs[task_idx] = updated_mus, updated_covs
+        # self.tasks_mus[task_idx], self.tasks_sigs[task_idx] = updated_mus, updated_covs
+        self.tasks_mus[task_idx] = updated_mus # NOTE
         # self.network.set_feature_space_distribution_parameters(updated_mus, updated_covs, self.tasks_weights[task_idx], task=task_idx)
         
         # self.network.weights = self.weights
@@ -1277,7 +1282,7 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
 
 
     def optimal_sep(self, N, d):
-
+        torch.manual_seed(42)
         class OptimumSep(nn.Module):
 
             def __init__(self, t=0.7, *args, **kwargs) -> None:
@@ -1300,7 +1305,8 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
             x_norm = torch.nn.functional.normalize(x, dim=1)
             loss = sep_cond(x_norm)
             if i % 100 == 0:
-                print(i, loss.item())
+                # print(i, loss.item())
+                pass
             if loss.item() < min_loss:
                 min_loss = loss.item()
                 optimal_target = x_norm
@@ -1310,10 +1316,11 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
             optimizer.step()
 
 
-        min_dist = torch.cdist(optimal_target, optimal_target).fill_diagonal_(torch.inf).min().item()
+        min_dist = torch.cdist(optimal_target, optimal_target).fill_diagonal_(-torch.inf).max().item()
 
         # Find the maximum variance under which the distributions are still well-separated 
-        max_var = min_dist / np.sqrt(d)
+        # max_var = min_dist / np.sqrt(d)
+        max_var = np.square(min_dist / (2 * self.csep)) / d
         
 
         return optimal_target.detach(), min_dist, max_var
@@ -1344,6 +1351,8 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
         return intervals
 
     def init_centers(self, N, dim, ms, sort=False, domain=[-1, 1]):
+        torch.manual_seed(433)
+        np.random.seed(433)
         centers = []
         # m = max(ms)
         m = 0#min(ms)/2
@@ -1385,6 +1394,7 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
                 comp_cov = (np.power((m * s / c), 2) / dim) * torch.eye(dim) + (1e-05*torch.eye(dim))
                 all_comp_covs_torch[i][k, :] = comp_cov
                 comp_center = np.random.uniform(center-(m/2), center+(m/2))
+                # comp_center = comp_center = np.random.uniform(center-(0.1 * s), center+(0.1 * s))
                 all_comp_centers_torch[i][k] = torch.from_numpy(comp_center)
 
         # return torch.stack(all_comp_centers_torch), torch.stack(all_comp_covs_torch)
@@ -1417,34 +1427,41 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
         return weights
 
 
-    def init_task_distribution(self, vars, csep, num_classes, domain=[-1, 1]):
+    def init_task_distribution(self, vars, csep, num_classes, domain=[-1, 1], center_method="partition"):
 
         print(f"{vars}, {csep}, {self.feature_space_dim}")
         min_dists = [csep * np.sqrt(self.feature_space_dim * v) for i, v in enumerate(vars)]
         # self.min_dists = min_dists
         print(f"{min_dists}")
+
+        if center_method == "partition":
         
-        max_trys = 15000
-        for t in range(max_trys):
-            if t % 100 == 0: print(t)
-            try:
-                # centers = self.init_centers(self.num_components, self.feature_space_dim, min_dists, sort=False)
-                centers = self.init_centers(num_classes, self.feature_space_dim, min_dists, domain=domain, sort=False)
-                break
-            except ValueError:
-                pass
+            max_trys = 15000
+            for t in range(max_trys):
+                if t % 100 == 0: print(t)
+                try:
+                    # centers = self.init_centers(self.num_components, self.feature_space_dim, min_dists, sort=False)
+                    centers = self.init_centers(num_classes, self.feature_space_dim, min_dists, domain=domain, sort=False)
+                    break
+                except ValueError:
+                    pass
+        
+        elif center_method == "optim":
+
+            centers, min_dist, max_var = self.optimal_sep(num_classes, self.feature_space_dim)
+            min_dists = [min_dist for _ in range(len(min_dists))]
 
         mus, sigs = self.init_gmm_centers(centers, self.feature_space_dim, min_dists, csep)
         weights = self.init_uniform_mixture_weights()
 
         return mus, sigs, weights, min_dists
 
-    def init_all_distributions(self, tasks_vars, tasks_cseps, domain=[-1, 1]):
+    def init_all_distributions(self, tasks_vars, tasks_cseps, domain=[-1, 1], **center_kwargs):
         
         tasks_mus, tasks_sigs, tasks_weights, tasks_min_dists, tasks_min_dist = [], [], [], [], []
         for task_id in range(self.total_task_num):
             task_num_classes = self.task_class[task_id]
-            task_mus, task_sigs, task_weights, min_dists = self.init_task_distribution(tasks_vars[task_id], tasks_cseps[task_id], task_num_classes, domain=domain)
+            task_mus, task_sigs, task_weights, min_dists = self.init_task_distribution(tasks_vars[task_id], tasks_cseps[task_id], task_num_classes, domain=domain, **center_kwargs)
 
             self.print_to_log_file(f"task {task_id} initial means: {task_mus}")
             self.print_to_log_file(f"task {task_id} initial vars: {task_sigs}")
