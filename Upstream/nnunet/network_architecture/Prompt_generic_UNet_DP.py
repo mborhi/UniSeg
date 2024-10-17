@@ -919,7 +919,7 @@ class TAPFeatureExtractor_DP(UniSeg_model):
         self.task_feature_space_gmm = [None for _ in range(num_tasks)]
         self.task_taps = nn.ModuleList([
             # TAP(feature_space_dim, num_classes, num_tasks, momentum=0.99, queue_size=10000, val_q_size=2500, gmm_comps=10) 
-            TAP(feature_space_dim, self.task_to_num_classes[tidx], num_tasks, momentum=0.99, queue_size=10000, val_q_size=2500, gmm_comps=10) 
+            TAP(feature_space_dim, self.task_to_num_classes[tidx], num_tasks, momentum=0.99, queue_size=10000, val_q_size=2500, gmm_comps=self.gmm_comps) 
             for tidx in range(num_tasks)
         ])
         # self.task_taps = [
@@ -944,7 +944,7 @@ class TAPFeatureExtractor_DP(UniSeg_model):
         self.task_var_gmms = [
             [ # NOTE
             # BayesianGaussianMixture(n_components=gmm_comps, covariance_type="diag", warm_start=True, max_iter=400, random_state=42)
-            BayesianGaussianMixture(n_components=gmm_comps, covariance_type="full", warm_start=True, max_iter=400)
+            BayesianGaussianMixture(n_components=gmm_comps, covariance_type="full", warm_start=True, max_iter=400, random_state=42)
             for _ in range(self.task_to_num_classes[tidx])
             # for _ in range(num_classes)
             ]

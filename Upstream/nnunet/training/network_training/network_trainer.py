@@ -586,6 +586,8 @@ class NetworkTrainer(object):
                     # torch.nn.utils.clip_grad_norm_(self.tap.parameters(), 24) # NOTE doesn't work (I think)
                     # torch.nn.utils.clip_grad_norm_(self.tap.parameters(), 12) # NOTE
                     torch.nn.utils.clip_grad_norm_(self.network.task_taps[tidx].parameters(), 12) # NOTE
+                    # torch.nn.utils.clip_grad_norm_(self.network.task_taps[tidx].parameters(), 24) # NOTE
+                    # torch.nn.utils.clip_grad_norm_(self.network.task_taps[tidx].parameters(), 36) # NOTE
                     self.tap_tasks_amp_grad_scaler[tidx].step(self.tap_tasks_optimizer[tidx])
                     self.tap_tasks_amp_grad_scaler[tidx].update()
                     self.tap_tasks_optimizer[tidx].zero_grad()

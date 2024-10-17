@@ -1,6 +1,7 @@
 import torch 
 import torch.nn.functional as F
 from torch.distributions import kl_divergence, MultivariateNormal, Normal, Categorical, Distribution
+import numpy as np
 
 def get_pos_neg_sets(inp, gt, match_dims=True):
     """Extracts the values from `inp` that correspond to the positive labeled values in `gt`.
@@ -286,6 +287,35 @@ def penalize_out_of_domain(means, domain=[-1, 1]):
         higher_diff_mean = 0
 
     return 0.5 * (lower_diff_mean + higher_diff_mean)
+
+def get_non_uniform_dynamic_sep_loss( means_pred, covs_pred, min_dists, csep=2):
+    total_loss = 0 # torch.tensor([0])
+    for p in range(len(means_pred)):
+        means_p = means_pred[p]
+        for c, mean_c in enumerate(means_p):
+            cov_c = covs_pred[p][c]
+            cov_c_eval = torch.max(torch.real(torch.linalg.eigvals(cov_c))) # should always be real, since cov is pos-def
+            for q in range(p + 1, len(means_pred)):
+                means_q = means_pred[q]
+                for k, mean_k in enumerate(means_q):
+                    cov_k = covs_pred[q][k]
+                    cov_k_eval = torch.max(torch.real(torch.linalg.eigvals(cov_k)))
+
+                    pred_min_dist = torch.sqrt(csep * torch.max(cov_c_eval, cov_k_eval)) * len(means_pred)
+                    # m = np.min((pred_min_dist.detach().cpu().numpy(), max(min_dists[p], min_dists[q])))
+                    m = np.max((pred_min_dist.detach().cpu().numpy(), max(min_dists[p], min_dists[q]))) # NOTE
+                    
+                    if m < 1e-06:
+                        continue
+
+                    dist = torch.norm(mean_c - mean_k, 2)
+                    if (dist - m) + 1e-06 < 0:
+                        # total_loss = total_loss + (1 - (dist/m))
+                        # total_loss = total_loss + torch.float_power(1 - (dist/m), 1/2)
+                        total_loss = total_loss + torch.float_power(m - dist, 1)
+
+
+    return total_loss
     
 if __name__ == "__main__":
     # Test

@@ -39,38 +39,38 @@ class TAP(nn.Module):
         ])
 
         # NOTE changed to scalar out
-        self.sig_mods = nn.ModuleList([
-            # self.create_mod(feature_space_dim, gmm_comps) for _ in range(num_components)
-            # self.create_mod_(feature_space_dim, gmm_comps) for _ in range(num_components)
-            self.create_mod_list(feature_space_dim, gmm_comps) for _ in range(num_components)
-            # self.create_mod_list(feature_space_dim, gmm_comps, scalar_out=True) for _ in range(num_components)
-        ])
+        # self.sig_mods = nn.ModuleList([
+        #     # self.create_mod(feature_space_dim, gmm_comps) for _ in range(num_components)
+        #     # self.create_mod_(feature_space_dim, gmm_comps) for _ in range(num_components)
+        #     self.create_mod_list(feature_space_dim, gmm_comps) for _ in range(num_components)
+        #     # self.create_mod_list(feature_space_dim, gmm_comps, scalar_out=True) for _ in range(num_components)
+        # ])
         
-        self.task_mu_modules = nn.ModuleList([
-            nn.Sequential(
-                # each task's mean of dim feature space (flattented), scalara vars for each task, task prompt dim, task_id
-                nn.Linear((feature_space_dim * (num_components*gmm_comps)) + (1 * (num_components*gmm_comps)) + 1, 1024), 
-                # nn.Linear((feature_space_dim * (num_components*10)) + (1 * (num_components*10)) + 1, 1024), 
-                nn.PReLU(), 
-                nn.Linear(1024, 512),
-                nn.PReLU(), 
-                nn.Linear(512, feature_space_dim),
-                nn.Tanh(), 
-            )
-            for t in range(num_components * gmm_comps)
-            # for t in range(1)
-        ])
-        self.task_sigma_modules = nn.ModuleList([
-            nn.Sequential(
-                nn.Linear((feature_space_dim * (num_components*gmm_comps)) + (1 * (num_components*gmm_comps)) + 1, 1024), 
-                nn.PReLU(), 
-                nn.Linear(1024, 512),
-                nn.PReLU(), 
-                nn.Linear(512, 1),
-                nn.ReLU()
-            )
-            for t in range(num_components * gmm_comps)
-        ])
+        # self.task_mu_modules = nn.ModuleList([
+        #     nn.Sequential(
+        #         # each task's mean of dim feature space (flattented), scalara vars for each task, task prompt dim, task_id
+        #         nn.Linear((feature_space_dim * (num_components*gmm_comps)) + (1 * (num_components*gmm_comps)) + 1, 1024), 
+        #         # nn.Linear((feature_space_dim * (num_components*10)) + (1 * (num_components*10)) + 1, 1024), 
+        #         nn.PReLU(), 
+        #         nn.Linear(1024, 512),
+        #         nn.PReLU(), 
+        #         nn.Linear(512, feature_space_dim),
+        #         nn.Tanh(), 
+        #     )
+        #     for t in range(num_components * gmm_comps)
+        #     # for t in range(1)
+        # ])
+        # self.task_sigma_modules = nn.ModuleList([
+        #     nn.Sequential(
+        #         nn.Linear((feature_space_dim * (num_components*gmm_comps)) + (1 * (num_components*gmm_comps)) + 1, 1024), 
+        #         nn.PReLU(), 
+        #         nn.Linear(1024, 512),
+        #         nn.PReLU(), 
+        #         nn.Linear(512, 1),
+        #         nn.ReLU()
+        #     )
+        #     for t in range(num_components * gmm_comps)
+        # ])
 
         conv_kwargs = {'kernel_size': 3, 'stride': 1, 'padding': 1, 'dilation': 1, 'bias': True}
         dropout_op_kwargs = {'p': 0.5, 'inplace': True}
@@ -235,28 +235,28 @@ class TAP(nn.Module):
                 # mu_hat_t_c = torch.mean(self.mu_mods[t][c](input), dim=0) # averaged along batch
                 mu_hat_t_c = torch.mean(self.f(input, self.mu_mods[t][c]), dim=0) # averaged along batch
                 # sigma_hat_t_c = torch.mean(self.sig_mods[t][c](input), dim=0) # averaged along batch
-                sigma_hat_t_c = torch.mean(self.f(input, self.sig_mods[t][c]), dim=0) # averaged along batch
+                # sigma_hat_t_c = torch.mean(self.f(input, self.sig_mods[t][c]), dim=0) # averaged along batch
                 # sigma_hat_t_c = self.sig_mods[t][c](input)
                 # mu_hat_t_c = torch.mean(self.task_mu_modules[0](input), dim=0) # averaged along batch
 
-                if with_update:
+                # if with_update:
 
-                    # updated_mean_t_c = (1 - self.momentum) *  means[t][c] + (self.momentum * mu_hat_t_c)
-                    # # updated_var_t_c = (1 - self.momentum) * vars[self.gmm_comps * t + c] + (self.momentum * sigma_hat_t_c) + 0.0001 # for numerical stability
-                    # updated_var_t_c = (1 - self.momentum) * vars[t][c] + (self.momentum * sigma_hat_t_c) + 0.0001 # for numerical stability
+                # updated_mean_t_c = (1 - self.momentum) *  means[t][c] + (self.momentum * mu_hat_t_c)
+                # # updated_var_t_c = (1 - self.momentum) * vars[self.gmm_comps * t + c] + (self.momentum * sigma_hat_t_c) + 0.0001 # for numerical stability
+                # updated_var_t_c = (1 - self.momentum) * vars[t][c] + (self.momentum * sigma_hat_t_c) + 0.0001 # for numerical stability
 
-                    updated_mean_t_c = means[t][c] + mu_hat_t_c
-                    mu_hats.append(updated_mean_t_c) 
+                updated_mean_t_c = means[t][c] + mu_hat_t_c
+                mu_hats.append(updated_mean_t_c) 
 
-                    # NOTE 
-                    updated_var_t_c = vars[t][c] + sigma_hat_t_c + 1e-04
-                    # updated_var_t_c = sigma_hat_t_c * vars[t][c] + 1e-04
-                    # updated_var_t_c = vars[t][c] #+ sigma_hat_t_c + 1e-04
-                    sigma_hats.append(updated_var_t_c)
-                else :
-                    # torch.diag(updated_var_t_c)
-                    mu_hats.append(mu_hat_t_c)
-                    sigma_hats.append(sigma_hat_t_c)
+                # NOTE 
+                # updated_var_t_c = vars[t][c] + sigma_hat_t_c + 1e-04
+                # updated_var_t_c = sigma_hat_t_c * vars[t][c] + 1e-04
+                updated_var_t_c = vars[t][c] #+ sigma_hat_t_c + 1e-04
+                sigma_hats.append(updated_var_t_c)
+                # else :
+                #     # torch.diag(updated_var_t_c)
+                #     mu_hats.append(mu_hat_t_c)
+                #     sigma_hats.append(sigma_hat_t_c)
                 
         return mu_hats, sigma_hats
 
