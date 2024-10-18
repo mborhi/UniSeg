@@ -52,20 +52,20 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
         super().__init__(plans_file, fold, output_folder, dataset_directory, batch_dice, stage, unpack_data,
                          deterministic, fp16)
         self.max_num_epochs = max_num_epochs
-        # self.task = {"live":0, "kidn":1, "hepa":2, "panc":3, "colo":4, "lung":5, "sple":6, "sub-":7, "pros":8, "BraT":9}
-        # self.task_class = {0: 3, 1: 3, 2: 3, 3: 3, 4: 2, 5: 2, 6: 2, 7: 2, 8: 2, 9: 4}
-        # self.task_id_class_lst_mapping = {
-        #     0: [0, 1, 2], 
-        #     1: [0, 1, 2], 
-        #     2: [0, 1, 2],
-        #     3: [0, 1, 2],
-        #     4: [0, 1], 
-        #     5: [0, 1],
-        #     6: [0, 1],
-        #     7: [0, 1],
-        #     8: [0, 1],
-        #     9: [0, 1, 2, 3], 
-        # }
+        self.task = {"live":0, "kidn":1, "hepa":2, "panc":3, "colo":4, "lung":5, "sple":6, "sub-":7, "pros":8, "BraT":9}
+        self.task_class = {0: 3, 1: 3, 2: 3, 3: 3, 4: 2, 5: 2, 6: 2, 7: 2, 8: 2, 9: 4}
+        self.task_id_class_lst_mapping = {
+            0: [0, 1, 2], 
+            1: [0, 1, 2], 
+            2: [0, 1, 2],
+            3: [0, 1, 2],
+            4: [0, 1], 
+            5: [0, 1],
+            6: [0, 1],
+            7: [0, 1],
+            8: [0, 1],
+            9: [0, 1, 2, 3], 
+        }
         # self.task = {"live":0, "kidn":1, "hepa":2, "panc":3, "colo":4, "lung":5, "sple":6, "sub-":7, "pros":8}
         # self.task_class = {0: 3, 1: 3, 2: 3, 3: 3, 4: 2, 5: 2, 6: 2, 7: 2, 8: 2}
         # self.task_id_class_lst_mapping = {
@@ -87,14 +87,14 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
         #     2: [0, 3], 
         #     3: [0, 4, 5], 
         # }
-        self.task = {"pros":0, "lung":1, "sple":2, "live":3}
-        self.task_class = {0: 2, 1: 2, 2: 2, 3: 3}
-        self.task_id_class_lst_mapping = {
-            0: [0, 1], 
-            1: [0, 1], 
-            2: [0, 1], 
-            3: [0, 1, 2], 
-        }
+        # self.task = {"pros":0, "lung":1, "sple":2, "live":3}
+        # self.task_class = {0: 2, 1: 2, 2: 2, 3: 3}
+        # self.task_id_class_lst_mapping = {
+        #     0: [0, 1], 
+        #     1: [0, 1], 
+        #     2: [0, 1], 
+        #     3: [0, 1, 2], 
+        # }
         if single_task:
             self.task = { "pros":0, }
             self.task_class = {0: 2}
@@ -666,7 +666,7 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
             # task_class_val_queue = self.tap.val_feature_space_qs[class_idx] 
             # task_class_val_queue = self.task_taps[task_idx].val_feature_space_qs[class_idx] 
             task_class_queue = self.network.task_taps[task_idx].feature_space_qs[class_idx] 
-            task_class_val_queue = self.network.task_taps[task_idx].val_feature_space_qs[class_idx] 
+            # task_class_val_queue = self.network.task_taps[task_idx].val_feature_space_qs[class_idx] 
             # task_class_val_queue = self.network.task_taps[-1].val_feature_space_qs[class_idx] 
             if len(task_class_queue) < 10:
                 continue
@@ -864,13 +864,13 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
             # Measure the adjustment:
             # mean_changes, cov_changes = measure_change(self.mus, self.sigs, new_mus, new_covs)
         # mean_changes, cov_changes = measure_change(self.mus, self.sigs, pruned_mus_, pruned_covs_)
-        mean_changes, cov_changes = measure_change(self.tasks_mus[task_idx], self.tasks_sigs[task_idx], pruned_mus_, pruned_covs_)
-        for i, (mean_change, cov_change) in enumerate(zip(mean_changes, cov_changes)):
-            self.print_to_log_file(f"mean[{i}] change: {mean_change}")
-            self.print_to_log_file(f"cov[{i}] change: {cov_change}")
-            if self.with_wandb:
-                wandb.log({f"mean_change[{i}]": mean_change})
-                wandb.log({f"cov_change[{i}]": cov_change})
+        # mean_changes, cov_changes = measure_change(self.tasks_mus[task_idx], self.tasks_sigs[task_idx], pruned_mus_, pruned_covs_)
+        # for i, (mean_change, cov_change) in enumerate(zip(mean_changes, cov_changes)):
+        #     self.print_to_log_file(f"mean[{i}] change: {mean_change}")
+        #     self.print_to_log_file(f"cov[{i}] change: {cov_change}")
+        #     if self.with_wandb:
+        #         wandb.log({f"mean_change[{i}]": mean_change})
+        #         wandb.log({f"cov_change[{i}]": cov_change})
             
             # self.mus, self.sigs = new_mus.detach(), new_covs.detach()
         # tap_momentum = 0.999 * (self.epoch / 50)
@@ -894,12 +894,12 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
                 # self.sigs[t] = new_covs[t]
                 # self.sigs[t] = (1 - tap_momentum) * self.sigs[t][:component_optimal_ns[t]] + (tap_momentum * new_covs[t])
             # updated_cov = (1 - tap_momentum) * self.sigs[t][:component_optimal_ns[t]] + (tap_momentum * pruned_covs_[t])
-            updated_cov = (1 - tap_momentum) * self.tasks_sigs[task_idx][t][:component_optimal_ns[t]] + (tap_momentum * pruned_covs_[t])
-            self.print_to_log_file(f"fin updated cov: {updated_cov}")
-            if not is_positive_definite(updated_cov):
-                # updated_cov = self.sigs[t][:component_optimal_ns[t]]
-                updated_cov = self.tasks_sigs[task_idx][t][:component_optimal_ns[t]]
-            updated_covs.append(updated_cov)
+            # updated_cov = (1 - tap_momentum) * self.tasks_sigs[task_idx][t][:component_optimal_ns[t]] + (tap_momentum * pruned_covs_[t])
+            # self.print_to_log_file(f"fin updated cov: {updated_cov}")
+            # if not is_positive_definite(updated_cov):
+            #     # updated_cov = self.sigs[t][:component_optimal_ns[t]]
+            #     updated_cov = self.tasks_sigs[task_idx][t][:component_optimal_ns[t]]
+            # updated_covs.append(updated_cov)
             # updated_covs.append(updated_cov.clone())
                 # self.sigs[t] = (1 - tap_momentum) * self.sigs[t] + (tap_momentum * pruned_covs[t])
 

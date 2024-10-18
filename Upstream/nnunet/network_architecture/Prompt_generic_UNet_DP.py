@@ -1348,8 +1348,11 @@ class TAPFeatureExtractor_DP(UniSeg_model):
 
         if len(component_indices) < self.num_classes:
             # add dummy
-            dummy_dim = torch.zeros(b, 1, h, w, d, device=feature_log_probs.device)
-            feature_log_probs = torch.cat((feature_log_probs, dummy_dim), 1)
+            difference = self.num_classes - len(component_indices)
+            # dummy_dim = torch.zeros(b, 1, h, w, d, device=feature_log_probs.device)
+            dummy_dim = torch.zeros(b, difference, h, w, d, device=feature_log_probs.device)
+            # feature_log_probs = torch.cat((feature_log_probs, dummy_dim), 1)
+            feature_log_probs = torch.cat((dummy_dim, feature_log_probs), 1)
         # segmentation = torch.argmax(feature_log_probs, dim=1)
         # segmentation = self.bayes(feature_log_probs)
         # segmentation = torch.argmax(F.softmax(feature_log_probs, dim=1), dim=1)

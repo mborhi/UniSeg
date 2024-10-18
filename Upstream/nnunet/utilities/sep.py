@@ -302,8 +302,8 @@ def get_non_uniform_dynamic_sep_loss( means_pred, covs_pred, min_dists, csep=2):
                     cov_k_eval = torch.max(torch.real(torch.linalg.eigvals(cov_k)))
 
                     pred_min_dist = torch.sqrt(csep * torch.max(cov_c_eval, cov_k_eval)) * len(means_pred)
-                    # m = np.min((pred_min_dist.detach().cpu().numpy(), max(min_dists[p], min_dists[q])))
-                    m = np.max((pred_min_dist.detach().cpu().numpy(), max(min_dists[p], min_dists[q]))) # NOTE
+                    m = np.min((pred_min_dist.detach().cpu().numpy(), max(min_dists[p], min_dists[q])))
+                    # m = np.max((pred_min_dist.detach().cpu().numpy(), max(min_dists[p], min_dists[q]))) # NOTE
                     
                     if m < 1e-06:
                         continue
