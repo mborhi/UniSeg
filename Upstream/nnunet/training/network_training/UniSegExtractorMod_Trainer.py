@@ -52,20 +52,20 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
         super().__init__(plans_file, fold, output_folder, dataset_directory, batch_dice, stage, unpack_data,
                          deterministic, fp16)
         self.max_num_epochs = max_num_epochs
-        # self.task = {"live":0, "kidn":1, "hepa":2, "panc":3, "colo":4, "lung":5, "sple":6, "sub-":7, "pros":8, "BraT":9}
-        # self.task_class = {0: 3, 1: 3, 2: 3, 3: 3, 4: 2, 5: 2, 6: 2, 7: 2, 8: 2, 9: 4}
-        # self.task_id_class_lst_mapping = {
-        #     0: [0, 1, 2], 
-        #     1: [0, 1, 2], 
-        #     2: [0, 1, 2],
-        #     3: [0, 1, 2],
-        #     4: [0, 1], 
-        #     5: [0, 1],
-        #     6: [0, 1],
-        #     7: [0, 1],
-        #     8: [0, 1],
-        #     9: [0, 1, 2, 3], 
-        # }
+        self.task = {"live":0, "kidn":1, "hepa":2, "panc":3, "colo":4, "lung":5, "sple":6, "sub-":7, "pros":8, "BraT":9}
+        self.task_class = {0: 3, 1: 3, 2: 3, 3: 3, 4: 2, 5: 2, 6: 2, 7: 2, 8: 2, 9: 4}
+        self.task_id_class_lst_mapping = {
+            0: [0, 1, 2], 
+            1: [0, 1, 2], 
+            2: [0, 1, 2],
+            3: [0, 1, 2],
+            4: [0, 1], 
+            5: [0, 1],
+            6: [0, 1],
+            7: [0, 1],
+            8: [0, 1],
+            9: [0, 1, 2, 3], 
+        }
         # self.task = {"live":0, "kidn":1, "hepa":2, "panc":3, "colo":4, "lung":5, "sple":6, "sub-":7, "pros":8}
         # self.task_class = {0: 3, 1: 3, 2: 3, 3: 3, 4: 2, 5: 2, 6: 2, 7: 2, 8: 2}
         # self.task_id_class_lst_mapping = {
@@ -87,14 +87,14 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
         #     2: [0, 3], 
         #     3: [0, 4, 5], 
         # }
-        self.task = {"pros":0, "lung":1, "sple":2, "live":3}
-        self.task_class = {0: 2, 1: 2, 2: 2, 3: 3}
-        self.task_id_class_lst_mapping = {
-            0: [0, 1], 
-            1: [0, 1], 
-            2: [0, 1], 
-            3: [0, 1, 2], 
-        }
+        # self.task = {"pros":0, "lung":1, "sple":2, "live":3}
+        # self.task_class = {0: 2, 1: 2, 2: 2, 3: 3}
+        # self.task_id_class_lst_mapping = {
+        #     0: [0, 1], 
+        #     1: [0, 1], 
+        #     2: [0, 1], 
+        #     3: [0, 1, 2], 
+        # }
         if single_task:
             self.task = { "pros":0, }
             self.task_class = {0: 2}
@@ -552,10 +552,10 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
                 if self.with_wandb and tidx in self.to_log:
                     # test_img_log(data[0], target[0], output_probs[0], tidx, self.task_id_class_lst_mapping[tidx])
                     # test_img_log_color(data[0], target[0], output_probs[0], tidx, self.task_id_class_lst_mapping[tidx])
-                    test_img_log_color(data[0], target[0], output_probs[0], tidx, self.task_class[tidx])
-                    self.print_to_log_file(f"prior to rmv: {self.to_log}")
+                    test_img_log_color(data, target[0], output_probs[0], tidx, self.task_class[tidx])
+                    # self.print_to_log_file(f"prior to rmv: {self.to_log}")
                     self.to_log = self.to_log[self.to_log != tidx]
-                    self.print_to_log_file(f"removed {tidx} to rmv: {self.to_log}")
+                    # self.print_to_log_file(f"removed {tidx} to rmv: {self.to_log}")
 
                 del data
                 

@@ -212,13 +212,16 @@ def main():
                             num_gpus=args.num_gpus, 
                             single_task=args.single_task)
 
-    if args.disable_saving:
-        trainer.save_final_checkpoint = False # whether or not to save the final checkpoint
-        trainer.save_best_checkpoint = False  # whether or not to save the best checkpoint according to
-        # self.best_val_eval_criterion_MA
-        trainer.save_intermediate_checkpoints = True  # whether or not to save checkpoint_latest. We need that in case
-        # the training crashes
-        trainer.save_latest_only = True  # if false it will not store/overwrite _latest but separate files each
+    trainer.save_intermediate_checkpoints = True
+    trainer.save_final_checkpoint = True
+    trainer.save_latest_only = False
+    # if args.disable_saving:
+    #     trainer.save_final_checkpoint = False # whether or not to save the final checkpoint
+    #     trainer.save_best_checkpoint = False  # whether or not to save the best checkpoint according to
+    #     # self.best_val_eval_criterion_MA
+    #     trainer.save_intermediate_checkpoints = True  # whether or not to save checkpoint_latest. We need that in case
+    #     # the training crashes
+    #     trainer.save_latest_only = True  # if false it will not store/overwrite _latest but separate files each
 
     trainer.initialize(not validation_only)
     # init_means, init_vars = trainer.network.dynamic_dist.get_mean_var()

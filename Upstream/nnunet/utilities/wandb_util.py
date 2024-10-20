@@ -63,27 +63,30 @@ def wandb_log_outputs(input_image, output_features, output_segmentation, output_
     wandb.log({"Segmentation mask": wandb_mask_logs})
 
 
-def test_img_log_color(img, gt_segs, probs, tsk_idx, classes):
-    class_labels = {1: "organ", 2: "tumor"}
+def test_img_log_color(imgs, gt_segs, probs, tsk_idx, classes):
+    class_labels = {1: "organ", 2: "tumor", 3: "brats", 4:"brats_1"}
     # num_classes = len(classes)
-
-    for batch_idx in range(img.shape[0]):
+    # print(f"gt_segs: {gt_segs.shape} | {imgs.shape}")
+    for batch_idx in range(imgs.shape[0]):
         # for cls in classes:
         for cls in range(1, classes):
             # gt_seg = gt_segs.argmax(1)[batch_idx].detach().cpu().numpy()
-            gt_seg = gt_segs[batch_idx].amax(0).detach().cpu().numpy()
+            # print(f"{gt_segs.shape}, {batch_idx}")
+            # print(f"{gt_segs[batch_idx].shape}")
+            img = imgs[batch_idx].amax(0)
+            gt_seg = gt_segs[batch_idx].clone().amax(0).detach().cpu().numpy()
             slice_index, max_class_slice, max_voxel_count = find_slice_with_most_class_voxels(gt_seg, cls=cls)
 
-            print(f"Slice {slice_index} has the most voxels with class == {cls} ({max_voxel_count} voxels).")
+            # print(f"Slice {slice_index} has the most voxels with class == {cls} ({max_voxel_count} voxels).")
 
             # image = rescale(img[batch_idx, :, slice_index, :].detach().cpu().numpy())#/255
-            image = rescale(img[batch_idx, slice_index, :, :].detach().cpu().numpy())#/255
-            print(f"image: {image.shape}")
+            image = rescale(img[slice_index, :, :].detach().cpu().numpy())#/255
+            # print(f"image: {image.shape}")
             
             # final_pred_wandb = probs.argmax(1)[batch_idx, :, slice_index, :].detach().cpu().numpy().astype(float)
             final_pred_wandb = probs.argmax(1)[batch_idx, slice_index, :, :].detach().cpu().numpy().astype(float)
             final_pred_wandb = rescale(final_pred_wandb)/255
-            print(f"final_pred_wandb: {final_pred_wandb.shape}")
+            # print(f"final_pred_wandb: {final_pred_wandb.shape}")
 
             # Apply the color map to ground truth mask (RGB conversion)
             # final_mask_wandb = apply_color_map(gt_seg[:, slice_index, :], num_classes)
