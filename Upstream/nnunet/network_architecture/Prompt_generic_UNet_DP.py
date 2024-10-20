@@ -1035,12 +1035,12 @@ class TAPFeatureExtractor_DP(UniSeg_model):
 
         # NOTE
         # extract + permute dims for DP 
-        # lst_gt_extractions = []
-        # for i, feature in enumerate(features): # for each level of the deep supervision
-        #     gt_extractions = [extract_task_set(feature, gt_seg[i], c, keep_dims=True).permute(1, 0) for c in target_classes[i]]
-        #     lst_gt_extractions.append(gt_extractions)
+        lst_gt_extractions = []
+        for i, feature in enumerate(features): # for each level of the deep supervision
+            gt_extractions = [extract_task_set(feature, gt_seg[i], c, keep_dims=True).permute(1, 0) for c in target_classes[i]]
+            lst_gt_extractions.append(gt_extractions)
         
-        # tc_inds = self.update_queues(lst_gt_extractions, target_classes, task_id, update_size=25, task_specific=True)
+        tc_inds = self.update_queues(lst_gt_extractions, target_classes, task_id, update_size=5, task_specific=True)
         # self.adjust_dist_params(tp_feats, task_id, tc_inds)
 
         # seg = self.full_segment(features[0], task_id)
@@ -1351,8 +1351,8 @@ class TAPFeatureExtractor_DP(UniSeg_model):
             difference = self.num_classes - len(component_indices)
             # dummy_dim = torch.zeros(b, 1, h, w, d, device=feature_log_probs.device)
             dummy_dim = torch.zeros(b, difference, h, w, d, device=feature_log_probs.device)
-            # feature_log_probs = torch.cat((feature_log_probs, dummy_dim), 1)
-            feature_log_probs = torch.cat((dummy_dim, feature_log_probs), 1)
+            feature_log_probs = torch.cat((feature_log_probs, dummy_dim), 1)
+            # feature_log_probs = torch.cat((dummy_dim, feature_log_probs), 1)
         # segmentation = torch.argmax(feature_log_probs, dim=1)
         # segmentation = self.bayes(feature_log_probs)
         # segmentation = torch.argmax(F.softmax(feature_log_probs, dim=1), dim=1)

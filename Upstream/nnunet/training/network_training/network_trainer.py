@@ -546,6 +546,7 @@ class NetworkTrainer(object):
         while self.epoch < self.max_num_epochs:
             self.print_to_log_file("\nepoch: ", self.epoch)
             if wandb.run is not None: wandb.log({"epoch": self.epoch})
+            self.to_log = np.arange(self.total_task_num)
             self.recalc_dist = True
             self.recalced = False
             epoch_start_time = time()
