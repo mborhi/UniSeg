@@ -246,6 +246,8 @@ class TAP(nn.Module):
                 # updated_var_t_c = (1 - self.momentum) * vars[t][c] + (self.momentum * sigma_hat_t_c) + 0.0001 # for numerical stability
 
                 updated_mean_t_c = means[t][c] + mu_hat_t_c
+                tap_momentum = 0.40
+                updated_mean_t_c = (1 - tap_momentum) * means[t][c] + (tap_momentum * updated_mean_t_c)
                 mu_hats.append(updated_mean_t_c) 
 
                 # NOTE 

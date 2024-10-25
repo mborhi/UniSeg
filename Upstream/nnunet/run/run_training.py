@@ -62,7 +62,9 @@ def main():
     parser.add_argument("--fp32", required=False, default=False, action="store_true",
                         help="disable mixed precision training and run old school fp32")
     parser.add_argument("--single_task", required=False, default=False, action="store_true",
-                        help="disable mixed precision training and run old school fp32")
+                        help="run only on single task (prostate dataset)")
+    parser.add_argument("--ood_detection_mode", required=False, default=False, action="store_true",
+                        help="enables OOD detection mode")
     parser.add_argument("-feature_space_dim", required=False, default=32, type=int,
                         help="feature space dimension of model")
     parser.add_argument("-gmm_comps", required=False, default=5, type=int,
@@ -210,7 +212,8 @@ def main():
                             max_num_epochs=args.max_num_epochs, 
                             batch_size=args.batch_size, 
                             num_gpus=args.num_gpus, 
-                            single_task=args.single_task)
+                            single_task=args.single_task, 
+                            ood_detection_mode=args.ood_detection_mode)
 
     trainer.save_intermediate_checkpoints = True
     trainer.save_final_checkpoint = True

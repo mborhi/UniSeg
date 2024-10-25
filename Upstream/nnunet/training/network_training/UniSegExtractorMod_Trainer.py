@@ -48,24 +48,24 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
     def __init__(self, plans_file, fold, output_folder=None, dataset_directory=None, batch_dice=True, stage=None,
                  unpack_data=True, deterministic=True, fp16=False, 
                  feature_space_dim=32, gmm_comps=5, loss_type="gnlll", update_iter=1, queue_size=5000, max_num_epochs=1000, 
-                 batch_size=2, num_gpus=1, single_task=False):
+                 batch_size=2, num_gpus=1, single_task=False, ood_detection_mode=False):
         super().__init__(plans_file, fold, output_folder, dataset_directory, batch_dice, stage, unpack_data,
                          deterministic, fp16)
         self.max_num_epochs = max_num_epochs
-        self.task = {"live":0, "kidn":1, "hepa":2, "panc":3, "colo":4, "lung":5, "sple":6, "sub-":7, "pros":8, "BraT":9}
-        self.task_class = {0: 3, 1: 3, 2: 3, 3: 3, 4: 2, 5: 2, 6: 2, 7: 2, 8: 2, 9: 4}
-        self.task_id_class_lst_mapping = {
-            0: [0, 1, 2], 
-            1: [0, 1, 2], 
-            2: [0, 1, 2],
-            3: [0, 1, 2],
-            4: [0, 1], 
-            5: [0, 1],
-            6: [0, 1],
-            7: [0, 1],
-            8: [0, 1],
-            9: [0, 1, 2, 3], 
-        }
+        # self.task = {"live":0, "kidn":1, "hepa":2, "panc":3, "colo":4, "lung":5, "sple":6, "sub-":7, "pros":8, "BraT":9}
+        # self.task_class = {0: 3, 1: 3, 2: 3, 3: 3, 4: 2, 5: 2, 6: 2, 7: 2, 8: 2, 9: 4}
+        # self.task_id_class_lst_mapping = {
+        #     0: [0, 1, 2], 
+        #     1: [0, 1, 2], 
+        #     2: [0, 1, 2],
+        #     3: [0, 1, 2],
+        #     4: [0, 1], 
+        #     5: [0, 1],
+        #     6: [0, 1],
+        #     7: [0, 1],
+        #     8: [0, 1],
+        #     9: [0, 1, 2, 3], 
+        # }
         # self.task = {"live":0, "kidn":1, "hepa":2, "panc":3, "colo":4, "lung":5, "sple":6, "sub-":7, "pros":8}
         # self.task_class = {0: 3, 1: 3, 2: 3, 3: 3, 4: 2, 5: 2, 6: 2, 7: 2, 8: 2}
         # self.task_id_class_lst_mapping = {
@@ -87,14 +87,14 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
         #     2: [0, 3], 
         #     3: [0, 4, 5], 
         # }
-        # self.task = {"pros":0, "lung":1, "sple":2, "live":3}
-        # self.task_class = {0: 2, 1: 2, 2: 2, 3: 3}
-        # self.task_id_class_lst_mapping = {
-        #     0: [0, 1], 
-        #     1: [0, 1], 
-        #     2: [0, 1], 
-        #     3: [0, 1, 2], 
-        # }
+        self.task = {"pros":0, "lung":1, "sple":2, "live":3}
+        self.task_class = {0: 2, 1: 2, 2: 2, 3: 3}
+        self.task_id_class_lst_mapping = {
+            0: [0, 1], 
+            1: [0, 1], 
+            2: [0, 1], 
+            3: [0, 1, 2], 
+        }
         if single_task:
             self.task = { "pros":0, }
             self.task_class = {0: 2}
@@ -133,6 +133,7 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
         self.update_target_dist = False
         self.return_est_dists = True
         self.loss_type = loss_type
+        self.ood_detection_mode = ood_detection_mode
 
         self.max_gmm_comps = gmm_comps
 
@@ -196,6 +197,7 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
                                             copy.deepcopy(self.task_id_class_lst_mapping),
                                             *uniseg_args, 
                                             with_wandb=self.with_wandb,
+                                            ood_detection_mode=self.ood_detection_mode,
                                         #   **uniseg_kwargs
                                         )
         # self.tap = TAP(self.feature_space_dim, self.num_components, 0.995, queue_size=5000, gmm_comps = self.gmm_comps)
@@ -885,7 +887,12 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
             
             # self.mus, self.sigs = new_mus.detach(), new_covs.detach()
         # tap_momentum = 0.999 * (self.epoch / 50)
-        tap_momentum = 1 - (self.epoch / self.max_num_epochs)
+        # tap_momentum = 1 - (self.epoch / self.max_num_epochs)
+        # tap_momentum = max(0.5 - (self.epoch / self.max_num_epochs), 0.2)
+        # tap_momentum = max(0.5 - (self.epoch / self.max_num_epochs), 0.3)
+        # tap_momentum = max(0.4 - np.power(self.epoch / self.max_num_epochs, 2), 0.3)
+        # tap_momentum = min(0.3 + np.power(self.epoch / self.max_num_epochs, 1/2), 0.45) # high glb mean dc
+        tap_momentum = 0.40
         # tap_momentum = 1 - np.power(self.epoch / self.max_num_epochs, 2)
         # tap_momentum = 0.1
         updated_mus, updated_covs = [], []
@@ -1042,6 +1049,11 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
                                                                                      all_in_gpu=all_in_gpu,
                                                                                      mixed_precision=self.fp16)[1]
 
+                if self.network.ood_detection_mode:
+                    softmax_pred, anomaly_probabilities = softmax_pred
+                    anomaly_probabilities = anomaly_probabilities.transpose([0] + [i + 1 for i in self.transpose_backward])
+                    anomaly_probabilities = anomaly_probabilities[:self.task_class[int(task_id)]]
+                
                 softmax_pred = softmax_pred.transpose([0] + [i + 1 for i in self.transpose_backward])
 
                 softmax_pred = softmax_pred[:self.task_class[int(task_id)]]
@@ -1050,6 +1062,8 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
 
                 if save_softmax:
                     softmax_fname = join(output_folder, fname + ".npz")
+                    if self.network.ood_detection_mode:
+                        anomaly_fname = join(output_folder, fname + "_anomaly_prob" + ".npz")
                 else:
                     softmax_fname = None
 
@@ -1063,6 +1077,9 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
                 if np.prod(softmax_pred.shape) > (2e9 / 4 * 0.85):  # *0.85 just to be save
                     np.save(join(output_folder, fname + ".npy"), softmax_pred)
                     softmax_pred = join(output_folder, fname + ".npy")
+                    if self.network.ood_detection_mode:
+                        np.save(join(output_folder, fname + "_anomaly_prob" + ".npy"), anomaly_probabilities)
+                        anomaly_probabilities = join(output_folder, fname + "_anomaly_prob" + ".npy")
 
 
                 # import pdb
@@ -1076,8 +1093,21 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
                                                           )
                                                          )
                                )
+                
+                results.append(export_pool.starmap_async(save_segmentation_nifti_from_softmax,
+                                                         ((anomaly_probabilities, join(output_folder, fname + "_anomaly_prob" + ".nii.gz"),
+                                                           properties, interpolation_order, self.regions_class_order,
+                                                           None, None,
+                                                           anomaly_fname, None, force_separate_z,
+                                                           interpolation_order_z),
+                                                          )
+                                                         )
+                               )
 
             pred_gt_tuples.append([join(output_folder, fname + ".nii.gz"),
+                                   join(self.gt_niftis_folder, fname + ".nii.gz")])
+            
+            pred_gt_tuples.append([join(output_folder, fname + "_anomaly" + ".nii.gz"),
                                    join(self.gt_niftis_folder, fname + ".nii.gz")])
 
         _ = [i.get() for i in results]
