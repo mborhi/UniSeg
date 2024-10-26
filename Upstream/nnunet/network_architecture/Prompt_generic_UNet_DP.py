@@ -954,6 +954,9 @@ class TAPFeatureExtractor_DP(UniSeg_model):
 
         self.ood_detection_mode = ood_detection_mode
 
+        if ood_detection_mode:
+            self.thresholds = [None for tidx in range(num_tasks)]
+
     def fit_task_gmms(self, X, task, cidx):
 
         # self.task_var_gmms[task].fit(X)
@@ -1426,7 +1429,7 @@ class TAPFeatureExtractor_DP(UniSeg_model):
     def calculate_task_ood_threshold(self, task_id):
         self.thresholds[task_id] = None
         task_gmm = self.task_feature_space_gmm[task_id]
-        task_queues = self.task_taps[task_id].feature_qs
+        task_queues = self.task_taps[task_id].feature_space_qs
         # NOTE check shape of features
         correct_classification_probs_avg = []
         for class_idx in range(self.task_to_num_classes[task_id]):
@@ -1438,10 +1441,14 @@ class TAPFeatureExtractor_DP(UniSeg_model):
         self.thresholds[task_id] = np.mean(correct_classification_probs_avg)
 
     def determine_ood(self, predicted_probabilities, task_id):
-        ood_mask = predicted_probabilities < self.threshold[task_id]
+        task_id = int(task_id[0].item())
+        if self.thresholds[task_id] is None:
+            self.calculate_task_ood_threshold(task_id)
+        ood_mask = predicted_probabilities < self.thresholds[task_id]
         segmentation_prediction = predicted_probabilities.argmax(0)
-        segmentation_prediction[ood_mask.any(0)] = -1
-        anomaly_probabilities = 1 - predicted_probabilities.amax(0)
+        segmentation_prediction[ood_mask.all(0)] = -1
+        # anomaly_probabilities = 1 - np.amax(predicted_probabilities, 0)
+        anomaly_probabilities = 1 - predicted_probabilities
         return segmentation_prediction, anomaly_probabilities
 
     def _internal_predict_3D_3Dconv_tiled(self, x: np.ndarray, task_id: np.ndarray, step_size: float, do_mirroring: bool, mirror_axes: tuple,
@@ -1566,7 +1573,7 @@ class TAPFeatureExtractor_DP(UniSeg_model):
 
         if self.ood_detection_mode:
             predicted_segmentation, anomaly_probabilities = self.determine_ood(aggregated_results, task_id)
-            return predicted_segmentation, anomaly_probabilities 
+            return predicted_segmentation, (aggregated_results, anomaly_probabilities)
 
         if regions_class_order is None:
             predicted_segmentation = aggregated_results.argmax(0)

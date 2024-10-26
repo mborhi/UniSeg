@@ -385,7 +385,7 @@ class DataLoader3D(SlimDataLoaderBase):
 class DataLoader3D_UniSeg(SlimDataLoaderBase):
     def __init__(self, data, patch_size, final_patch_size, batch_size, has_prev_stage=False,
                  oversample_foreground_percent=0.0, memmap_mode="r", pad_mode="edge", pad_kwargs_data=None,
-                 pad_sides=None, task=None):
+                 pad_sides=None, task=None, ood=False):
         """
         This is the basic data loader for 3D networks. It uses preprocessed data as produced by my (Fabian) preprocessing.
         You can load the data with load_dataset(folder) where folder is the folder where the npz files are located. If there
@@ -422,6 +422,7 @@ class DataLoader3D_UniSeg(SlimDataLoaderBase):
         self.task = task
         self.task_num = len(task.keys())
         self.list_of_keys_task = [[] for _ in range(self.task_num)]
+        self.ood = ood
 
 
         for name in list(self._data.keys()):
@@ -504,7 +505,7 @@ class DataLoader3D_UniSeg(SlimDataLoaderBase):
         # print('key selection options:', self.list_of_keys_task[choice_id])
         selected_keys = np.random.choice(self.list_of_keys_task[choice_id], self.batch_size, True, None)
         # print(selected_keys, self.batch_size, selected_keys.shape) #2, [2,]
-        if choice_id == 9: #BraTS21 4 channel input
+        if choice_id == 9 or self.ood: #BraTS21 4 channel input
             data = np.zeros((self.batch_size, 4,  *self.patch_size), dtype=np.float32)
             seg = np.zeros((self.batch_size, 1,  *self.patch_size), dtype=np.float32)
         elif choice_id == 10: #AutoPET20 2 channel input

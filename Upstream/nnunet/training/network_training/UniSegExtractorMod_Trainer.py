@@ -52,20 +52,20 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
         super().__init__(plans_file, fold, output_folder, dataset_directory, batch_dice, stage, unpack_data,
                          deterministic, fp16)
         self.max_num_epochs = max_num_epochs
-        # self.task = {"live":0, "kidn":1, "hepa":2, "panc":3, "colo":4, "lung":5, "sple":6, "sub-":7, "pros":8, "BraT":9}
-        # self.task_class = {0: 3, 1: 3, 2: 3, 3: 3, 4: 2, 5: 2, 6: 2, 7: 2, 8: 2, 9: 4}
-        # self.task_id_class_lst_mapping = {
-        #     0: [0, 1, 2], 
-        #     1: [0, 1, 2], 
-        #     2: [0, 1, 2],
-        #     3: [0, 1, 2],
-        #     4: [0, 1], 
-        #     5: [0, 1],
-        #     6: [0, 1],
-        #     7: [0, 1],
-        #     8: [0, 1],
-        #     9: [0, 1, 2, 3], 
-        # }
+        self.task = {"live":0, "kidn":1, "hepa":2, "panc":3, "colo":4, "lung":5, "sple":6, "sub-":7, "pros":8, "BraT":9}
+        self.task_class = {0: 3, 1: 3, 2: 3, 3: 3, 4: 2, 5: 2, 6: 2, 7: 2, 8: 2, 9: 4}
+        self.task_id_class_lst_mapping = {
+            0: [0, 1, 2], 
+            1: [0, 1, 2], 
+            2: [0, 1, 2],
+            3: [0, 1, 2],
+            4: [0, 1], 
+            5: [0, 1],
+            6: [0, 1],
+            7: [0, 1],
+            8: [0, 1],
+            9: [0, 1, 2, 3], 
+        }
         # self.task = {"live":0, "kidn":1, "hepa":2, "panc":3, "colo":4, "lung":5, "sple":6, "sub-":7, "pros":8}
         # self.task_class = {0: 3, 1: 3, 2: 3, 3: 3, 4: 2, 5: 2, 6: 2, 7: 2, 8: 2}
         # self.task_id_class_lst_mapping = {
@@ -87,14 +87,20 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
         #     2: [0, 3], 
         #     3: [0, 4, 5], 
         # }
-        self.task = {"pros":0, "lung":1, "sple":2, "live":3}
-        self.task_class = {0: 2, 1: 2, 2: 2, 3: 3}
-        self.task_id_class_lst_mapping = {
-            0: [0, 1], 
-            1: [0, 1], 
-            2: [0, 1], 
-            3: [0, 1, 2], 
-        }
+        # self.task = {"pros":0, "lung":1, "sple":2, "live":3}
+        # self.task_class = {0: 2, 1: 2, 2: 2, 3: 3}
+        # self.task_id_class_lst_mapping = {
+        #     0: [0, 1], 
+        #     1: [0, 1], 
+        #     2: [0, 1], 
+        #     3: [0, 1, 2], 
+        # }
+        if ood_detection_mode:
+            self.task = {"BraT":0}
+            self.task_class = {0: 4}
+            self.task_id_class_lst_mapping = {
+                0: [0, 1, 2, 3]
+            }
         if single_task:
             self.task = { "pros":0, }
             self.task_class = {0: 2}
@@ -689,8 +695,8 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
             # task_class_val_queue = torch.vstack(task_class_val_queue).detach().cpu().numpy() if len(task_class_val_queue) > 10 else task_class_queue
             # self.network.gaussian_mixtures[t].fit(task_queue)
             # momentum = 0.1 * (1 - (self.epoch / self.max_num_epochs))
-            momentum = 0.1 #* (1 - (self.epoch / self.max_num_epochs))
-            # momentum = 0.1 * (self.epoch / self.max_num_epochs)
+            # momentum = 0.1 #* (1 - (self.epoch / self.max_num_epochs))
+            momentum = 0.4
             # mu_hat_t = torch.from_numpy(self.network.gaussian_mixtures[t].means_).cuda()
             # sig_hat_t = torch.from_numpy(self.network.gaussian_mixtures[t].covariances_).cuda()
             # curr_num_comps = self.mus[class_idx].shape[0]
@@ -720,7 +726,7 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
                 # self.mus[t] = mu_hat_t #(1 - momentum) * self.mus[t] + (momentum * mu_hat_t)
                 # self.sigs[t] = sig_hat_t.detach()#(1 - momentum) * self.sigs[t] + (momentum * sig_hat_t)
             # prev_comp_n = len(self.mus[class_idx])
-            prev_comp_n = len(self.tasks_mus[class_idx])
+            # prev_comp_n = len(self.tasks_mus[class_idx])
                 # optimal_n = prev_comp_n
                 # component_optimal_ns.append(prev_comp_n)
                 # self.print_to_log_file(f"prev size: {[m.size() for m in self.mus[t]]}")
@@ -731,13 +737,13 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
                     new_mus.append(torch.zeros(self.feature_space_dim).cuda())
                     new_sigs.append(torch.eye(self.feature_space_dim).cuda()) # NOTE
                     new_weights.append(torch.ones(1).cuda() / self.max_gmm_comps)
-                elif comp_idx >= prev_comp_n:
-                    # new_mus.append((1 - momentum) * torch.mean(self.mus[class_idx], 0) + (momentum * mu_hat_c[comp_idx]))
-                    new_mus.append((1 - momentum) * torch.mean(self.tasks_mus[task_idx][class_idx], 0) + (momentum * mu_hat_c[comp_idx]))
-                        # new_sigs.append((1 - momentum) * torch.mean(self.sigs[t], 0) + (momentum * sig_hat_t[comp_idx]))
-                    new_sigs.append(sig_hat_c[comp_idx])
-                    # new_weights.append((1 - momentum) * torch.mean(self.weights[class_idx], 0) + (momentum * weights_hat_c[comp_idx]))
-                    new_weights.append((1 - momentum) * torch.mean(self.tasks_weights[task_idx][class_idx], 0) + (momentum * weights_hat_c[comp_idx]))
+                # elif comp_idx >= prev_comp_n:
+                #     # new_mus.append((1 - momentum) * torch.mean(self.mus[class_idx], 0) + (momentum * mu_hat_c[comp_idx]))
+                #     new_mus.append((1 - momentum) * torch.mean(self.tasks_mus[task_idx][class_idx], 0) + (momentum * mu_hat_c[comp_idx]))
+                #         # new_sigs.append((1 - momentum) * torch.mean(self.sigs[t], 0) + (momentum * sig_hat_t[comp_idx]))
+                #     new_sigs.append(sig_hat_c[comp_idx])
+                #     # new_weights.append((1 - momentum) * torch.mean(self.weights[class_idx], 0) + (momentum * weights_hat_c[comp_idx]))
+                #     new_weights.append((1 - momentum) * torch.mean(self.tasks_weights[task_idx][class_idx], 0) + (momentum * weights_hat_c[comp_idx]))
                 else:
                     # new_mus.append((1 - momentum) * self.mus[class_idx][comp_idx] + (momentum * mu_hat_c[comp_idx]))
                     new_mus.append((1 - momentum) * self.tasks_mus[task_idx][class_idx][comp_idx] + (momentum * mu_hat_c[comp_idx]))
@@ -943,12 +949,12 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
         if self.threeD:
             dl_tr = DataLoader3D_UniSeg(self.dataset_tr, self.basic_generator_patch_size, self.patch_size, self.batch_size,
                                  False, oversample_foreground_percent=self.oversample_foreground_percent,
-                                 pad_mode="constant", pad_sides=self.pad_all_sides, memmap_mode='r', task=self.task)
+                                 pad_mode="constant", pad_sides=self.pad_all_sides, memmap_mode='r', task=self.task, ood=self.ood_detection_mode)
             # import pdb
             # pdb.set_trace()
             dl_val = DataLoader3D_UniSeg(self.dataset_val, self.patch_size, self.patch_size, self.batch_size, False,
                                   oversample_foreground_percent=self.oversample_foreground_percent,
-                                  pad_mode="constant", pad_sides=self.pad_all_sides, memmap_mode='r', task=self.task)
+                                  pad_mode="constant", pad_sides=self.pad_all_sides, memmap_mode='r', task=self.task, ood=self.ood_detection_mode)
         else:
             pass
         return dl_tr, dl_val
@@ -1066,6 +1072,7 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
                         anomaly_fname = join(output_folder, fname + "_anomaly_prob" + ".npz")
                 else:
                     softmax_fname = None
+                    anomaly_fname = None
 
                 """There is a problem with python process communication that prevents us from communicating objects
                 larger than 2 GB between processes (basically when the length of the pickle string that will be sent is
@@ -1093,22 +1100,23 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
                                                           )
                                                          )
                                )
-                
-                results.append(export_pool.starmap_async(save_segmentation_nifti_from_softmax,
-                                                         ((anomaly_probabilities, join(output_folder, fname + "_anomaly_prob" + ".nii.gz"),
-                                                           properties, interpolation_order, self.regions_class_order,
-                                                           None, None,
-                                                           anomaly_fname, None, force_separate_z,
-                                                           interpolation_order_z),
-                                                          )
-                                                         )
-                               )
+                if self.network.ood_detection_mode:
+                    results.append(export_pool.starmap_async(save_segmentation_nifti_from_softmax,
+                                                            ((anomaly_probabilities, join(output_folder, fname + "_anomaly_prob" + ".nii.gz"),
+                                                            properties, interpolation_order, self.regions_class_order,
+                                                            None, None,
+                                                            join(output_folder, fname + "_anomaly_prob" + ".npz"), None, force_separate_z,
+                                                            interpolation_order_z),
+                                                            )
+                                                            )
+                                )
 
             pred_gt_tuples.append([join(output_folder, fname + ".nii.gz"),
                                    join(self.gt_niftis_folder, fname + ".nii.gz")])
             
-            pred_gt_tuples.append([join(output_folder, fname + "_anomaly" + ".nii.gz"),
-                                   join(self.gt_niftis_folder, fname + ".nii.gz")])
+            if self.network.ood_detection_mode:
+                pred_gt_tuples.append([join(output_folder, fname + "_anomaly" + ".nii.gz"),
+                                    join(self.gt_niftis_folder, fname + ".nii.gz")])
 
         _ = [i.get() for i in results]
         self.print_to_log_file("finished prediction")

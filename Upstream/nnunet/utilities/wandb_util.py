@@ -175,7 +175,7 @@ def find_slice_with_most_class_voxels(volume, cls=0):
     - max_class_slice: The 2D slice with the maximum number of voxels of the given class.
     - max_voxel_count: The number of voxels of the class in that slice.
     """
-    print(f"uniques: {np.unique(volume)}")
+    # print(f"uniques: {np.unique(volume)}")
     # Count the number of voxels equal to `cls` in each slice along axis 0 (1st axis)
     voxel_counts = np.sum(volume == cls, axis=(1, 2))  # Summing along axes 1 and 2 gives the count for each 2D slice
     
