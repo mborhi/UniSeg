@@ -114,7 +114,7 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
                 
         print("task_class", self.task_class)
         self.visual_epoch = -1
-        self.total_task_num = len(self.task.keys()) if not single_task else 1 # NOTE
+        self.total_task_num = 10 # len(self.task.keys()) if not single_task else 1 # NOTE
         self.batch_size = batch_size
         self.num_batches_per_epoch = (50 * self.total_task_num) #// (num_gpus * (self.batch_size // 2)) #int((50 // num_gpus) * self.total_task_num)
         # self.num_batches_per_epoch = (3 * self.total_task_num) #// (num_gpus * self.batch_size) #int((50 // num_gpus) * self.total_task_num)
@@ -625,11 +625,11 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
         return l.detach().cpu().numpy()
 
     def recalc_targets(self):
-        task_class_optimal_ns = []
         
         for task_idx in range(self.total_task_num):
-            optimal_ns = self.recalc_task_targets(task_idx)
-            task_class_optimal_ns.append(optimal_ns)
+            # optimal_ns = self.recalc_task_targets(task_idx)
+            self.recalc_task_targets(task_idx)
+            # task_class_optimal_ns.append(optimal_ns)
 
         # NOTE revise
         # self.loss.main_loss.dist_weights = self.weights
@@ -695,8 +695,8 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
             # task_class_val_queue = torch.vstack(task_class_val_queue).detach().cpu().numpy() if len(task_class_val_queue) > 10 else task_class_queue
             # self.network.gaussian_mixtures[t].fit(task_queue)
             # momentum = 0.1 * (1 - (self.epoch / self.max_num_epochs))
-            # momentum = 0.1 #* (1 - (self.epoch / self.max_num_epochs))
-            momentum = 0.4
+            momentum = 0.1 #* (1 - (self.epoch / self.max_num_epochs))
+            # momentum = 0.4
             # mu_hat_t = torch.from_numpy(self.network.gaussian_mixtures[t].means_).cuda()
             # sig_hat_t = torch.from_numpy(self.network.gaussian_mixtures[t].covariances_).cuda()
             # curr_num_comps = self.mus[class_idx].shape[0]
@@ -704,7 +704,7 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
             # min_comps, max_comps = max(1, curr_num_comps-1), min(self.max_gmm_comps, curr_num_comps+1)
             # best_gmm, optimal_n, bics = self.network.find_optimal_components(val_queue, min_components = min_comps, max_components=max_comps)
             optimal_n = self.gmm_comps#10
-            class_optimal_ns.append(optimal_n)
+            # class_optimal_ns.append(optimal_n)
             if self.with_wandb:
                 # wandb.log({f'{class_idx}_opt_n': optimal_n})
                 wandb.log({f'{task_idx}_{class_idx}_opt_n': optimal_n})
@@ -733,10 +733,10 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
                 # for comp_idx in range(self.network.gaussian_mixtures[t].n_components):
                 # for comp_idx in range(optimal_n):
             for comp_idx in range(self.max_gmm_comps):
-                if comp_idx >= optimal_n:
-                    new_mus.append(torch.zeros(self.feature_space_dim).cuda())
-                    new_sigs.append(torch.eye(self.feature_space_dim).cuda()) # NOTE
-                    new_weights.append(torch.ones(1).cuda() / self.max_gmm_comps)
+                # if comp_idx >= optimal_n:
+                #     new_mus.append(torch.zeros(self.feature_space_dim).cuda())
+                #     new_sigs.append(torch.eye(self.feature_space_dim).cuda()) # NOTE
+                #     new_weights.append(torch.ones(1).cuda() / self.max_gmm_comps)
                 # elif comp_idx >= prev_comp_n:
                 #     # new_mus.append((1 - momentum) * torch.mean(self.mus[class_idx], 0) + (momentum * mu_hat_c[comp_idx]))
                 #     new_mus.append((1 - momentum) * torch.mean(self.tasks_mus[task_idx][class_idx], 0) + (momentum * mu_hat_c[comp_idx]))
@@ -744,14 +744,14 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
                 #     new_sigs.append(sig_hat_c[comp_idx])
                 #     # new_weights.append((1 - momentum) * torch.mean(self.weights[class_idx], 0) + (momentum * weights_hat_c[comp_idx]))
                 #     new_weights.append((1 - momentum) * torch.mean(self.tasks_weights[task_idx][class_idx], 0) + (momentum * weights_hat_c[comp_idx]))
-                else:
+                # else:
                     # new_mus.append((1 - momentum) * self.mus[class_idx][comp_idx] + (momentum * mu_hat_c[comp_idx]))
-                    new_mus.append((1 - momentum) * self.tasks_mus[task_idx][class_idx][comp_idx] + (momentum * mu_hat_c[comp_idx]))
-                    new_sigs.append(sig_hat_c[comp_idx])
-                        # new_sigs.append((1 - momentum) * self.sigs[t][comp_idx] + (momentum * sig_hat_t[comp_idx]))
-                    # new_weights.append((1 - momentum) * self.weights[t][comp_idx] + (momentum * weights_hat_t[comp_idx]))
-                    momentum_updated_weight_comp = (1 - momentum) * self.tasks_weights[task_idx][class_idx][comp_idx] + (momentum * weights_hat_c[comp_idx] )
-                    new_weights.append(momentum_updated_weight_comp)
+                new_mus.append((1 - momentum) * self.tasks_mus[task_idx][class_idx][comp_idx] + (momentum * mu_hat_c[comp_idx]))
+                new_sigs.append(sig_hat_c[comp_idx])
+                    # new_sigs.append((1 - momentum) * self.sigs[t][comp_idx] + (momentum * sig_hat_t[comp_idx]))
+                # new_weights.append((1 - momentum) * self.weights[t][comp_idx] + (momentum * weights_hat_t[comp_idx]))
+                momentum_updated_weight_comp = (1 - momentum) * self.tasks_weights[task_idx][class_idx][comp_idx] + (momentum * weights_hat_c[comp_idx] )
+                new_weights.append(momentum_updated_weight_comp)
                     # new_weights.append(weights_hat_c[comp_idx])
 
                 if self.with_wandb:
@@ -769,9 +769,10 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
             self.tasks_sigs[task_idx][class_idx] = torch.stack(new_sigs).detach().clone()
             self.tasks_weights[task_idx][class_idx] = torch.stack(new_weights).detach().clone()#.permute(1,0)
 
-        return class_optimal_ns
+        # return class_optimal_ns
 
     def allocate_targets(self, component_optimal_ns, task_idx):
+        self.print_to_log_file(f"allocating targets for task {task_idx}")
         # input_covs = []
         # for cov_comp_set in self.sigs:
         #     for cov in cov_comp_set:
@@ -793,6 +794,9 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
                     # cov_eigvals = torch.diagonal(comp_full_covs[eidx])
                 else:
                     cov_eigvals = torch.diagonal(comp_full_covs[eidx])
+
+                if not cov_eigvals.is_cuda:
+                    cov_eigvals = cov_eigvals.cuda()
                 e_covs.append(cov_eigvals)
             input_covs.append(e_covs)
 

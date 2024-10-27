@@ -228,7 +228,7 @@ class TAP(nn.Module):
                     means = torch.stack(means)
                 
                 input_means = means[t][c].reshape(-1)[None, :]#.repeat(x.size(0), 1).detach().to(device=x.device)
-                input_vars = vars[t][c].reshape(-1)[None, :]
+                input_vars = vars[t][c].reshape(-1)[None, :]#.to(device=means[0].device)
 
                 # input = torch.cat((input_means, input_vars, task_id), -1).to(dtype=torch.float16)
                 input = torch.cat((input_means, input_vars, task_id, comp_idx), -1).to(dtype=torch.float32).detach().clone()
@@ -246,8 +246,9 @@ class TAP(nn.Module):
                 # updated_var_t_c = (1 - self.momentum) * vars[t][c] + (self.momentum * sigma_hat_t_c) + 0.0001 # for numerical stability
 
                 updated_mean_t_c = means[t][c] + mu_hat_t_c
-                tap_momentum = 0.40
-                updated_mean_t_c = (1 - tap_momentum) * means[t][c] + (tap_momentum * updated_mean_t_c)
+                # NOTE
+                # tap_momentum = 0.40
+                # updated_mean_t_c = (1 - tap_momentum) * means[t][c] + (tap_momentum * updated_mean_t_c)
                 mu_hats.append(updated_mean_t_c) 
 
                 # NOTE 

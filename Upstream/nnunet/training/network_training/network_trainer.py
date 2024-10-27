@@ -455,10 +455,22 @@ class NetworkTrainer(object):
                 'best_stuff']
 
         # load targets and Qs
-        self.mus, self.sigs = checkpoint['target_mus'], checkpoint['target_sigs']
-        self.weights = checkpoint['target_weights']
-        # self.print_to_log_file(self.mus, self.sigs)
+        # self.mus, self.sigs = checkpoint['target_mus'], checkpoint['target_sigs']
+        # self.weights = checkpoint['target_weights']
+        self.tasks_mus, self.tasks_sigs = checkpoint['target_mus'], checkpoint['target_sigs']
+        self.tasks_weights = checkpoint['target_weights']
+        self.print_to_log_file(f"loaded distr. params: {len(self.tasks_mus)}, {len(self.tasks_sigs)}, {len(self.tasks_weights)}")
         if isinstance(self.network, TAPFeatureExtractor_DP):
+            for t in range(self.total_task_num):
+                self.tasks_sigs[t] = self.tasks_sigs[t].cuda()
+                # for class_idx in range(self.task_class[t]):
+                for class_idx in range(len(self.tasks_sigs[t])):
+                    # self.print_to_log_file(f"prev size {t}: {[m.size() for m in self.mus[t]]}")
+                    self.tasks_mus[t][class_idx] = self.tasks_mus[t][class_idx].cuda()
+                    # self.tasks_sigs[t][class_idx] = self.tasks_sigs[t][class_idx].cuda()
+                    self.tasks_weights[t][class_idx] = self.tasks_weights[t][class_idx].cuda()
+                self.network.set_feature_space_distribution_parameters(self.tasks_mus[t], self.tasks_sigs[t].cuda(), self.tasks_weights[t], task=t)
+                self.network.construct_task_feature_space_gmm_implicit(t)
             for t in range(self.total_task_num):
                 for c in range(self.task_class[t]):
                     saved_q_c = checkpoint[f'Q_{t}_{c}']
@@ -804,6 +816,9 @@ class NetworkTrainer(object):
                 pass
                 #self.print_to_log_file(
                 #    "Patience: %d/%d" % (self.epoch - self.best_epoch_based_on_MA_tr_loss, self.patience))
+
+        if self.all_val_losses[-1] > 0.80:
+            continue_training = False
 
         return continue_training
 
