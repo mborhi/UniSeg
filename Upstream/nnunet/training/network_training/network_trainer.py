@@ -742,6 +742,10 @@ class NetworkTrainer(object):
                 self.save_checkpoint(join(self.output_folder, "model_ep_%03.0d.model" % (self.epoch + 1)))
             self.save_checkpoint(join(self.output_folder, "model_latest.model"))
             self.print_to_log_file("done")
+        elif self.all_val_eval_metrics[-1] >= 0.79:
+            self.print_to_log_file(f"saving checkpoint with val score {self.all_val_eval_metrics[-1]} file...")
+            self.save_checkpoint(join(self.output_folder, f"model_high_val_ep_{self.epoch+1}.model"))
+            self.print_to_log_file("done")
 
     def update_eval_criterion_MA(self):
         """
@@ -818,7 +822,7 @@ class NetworkTrainer(object):
                 #self.print_to_log_file(
                 #    "Patience: %d/%d" % (self.epoch - self.best_epoch_based_on_MA_tr_loss, self.patience))
 
-        if self.all_val_losses[-1] > 0.80:
+        if self.all_val_eval_metrics[-1] >= 0.80:
             continue_training = False
 
         return continue_training
