@@ -457,6 +457,7 @@ class NetworkTrainer(object):
         # load targets and Qs
         # self.mus, self.sigs = checkpoint['target_mus'], checkpoint['target_sigs']
         # self.weights = checkpoint['target_weights']
+        self.min_dist = checkpoint['min_dist']
         self.tasks_mus, self.tasks_sigs = checkpoint['target_mus'], checkpoint['target_sigs']
         self.tasks_weights = checkpoint['target_weights']
         self.print_to_log_file(f"loaded distr. params: {len(self.tasks_mus)}, {len(self.tasks_sigs)}, {len(self.tasks_weights)}")

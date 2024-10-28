@@ -800,22 +800,20 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
                 e_covs.append(cov_eigvals)
             input_covs.append(e_covs)
 
-        tc_inds = [0, 1, 2]
-            # input_tc_inds = np.repeat(tc_inds, self.gmm_comps)
         # input_tc_inds = np.repeat(tc_inds, 10)
         # input_tc_inds = [list(range(self.max_gmm_comps)) for t in range(self.num_components)]
         input_tc_inds = [list(range(self.max_gmm_comps)) for t in range(self.task_class[task_idx])]
-        # torch.autograd.set_detect_anomaly(True)
+
         # self.tap_optimizer.zero_grad()
+        # tap_momentum = 1 - np.power(self.epoch / self.max_num_epochs, 2)
+        tap_momentum = min(0.3 + (self.epoch / self.max_num_epochs), 0.45)
         self.tap_tasks_optimizer[task_idx].zero_grad()
-        # for e in range(20):
         for e in range(15):
-        # for e in range(40):
             # new_mus, new_covs = self.tap(self.mus, input_covs, input_tc_inds)
             # new_mus, new_covs = self.tap.forward_dedicated(self.mus, input_covs, input_tc_inds)
             # new_mus, new_covs = self.tap.forward_dedicated(self.mus, input_covs, input_tc_inds, with_update=True)
             # new_mus, new_covs = self.task_taps[task_idx].forward_dedicated(self.tasks_mus[task_idx], input_covs, input_tc_inds, with_update=True)
-            new_mus, new_covs = self.network.task_taps[task_idx].forward_dedicated(self.tasks_mus[task_idx], input_covs, input_tc_inds, with_update=True)
+            new_mus, new_covs = self.network.task_taps[task_idx].forward_dedicated(self.tasks_mus[task_idx], input_covs, input_tc_inds, with_update=True, tap_momentum=tap_momentum)
                 # Prune the unneeded mus
             pruned_mus, pruned_covs = [], []
             em_mus, em_covs = [], []
@@ -902,8 +900,7 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
         # tap_momentum = max(0.5 - (self.epoch / self.max_num_epochs), 0.3)
         # tap_momentum = max(0.4 - np.power(self.epoch / self.max_num_epochs, 2), 0.3)
         # tap_momentum = min(0.3 + np.power(self.epoch / self.max_num_epochs, 1/2), 0.45) # high glb mean dc
-        tap_momentum = 0.40
-        # tap_momentum = 1 - np.power(self.epoch / self.max_num_epochs, 2)
+        # tap_momentum = 0.40
         # tap_momentum = 0.1
         updated_mus, updated_covs = [], []
         # for t in range(self.num_components):

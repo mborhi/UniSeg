@@ -208,7 +208,7 @@ class TAP(nn.Module):
 
         self.feature_space_qs = self.best_feature_space_qs
 
-    def forward_dedicated(self, means, vars, tc_inds, with_update=True):
+    def forward_dedicated(self, means, vars, tc_inds, with_update=True, tap_momentum=None):
 
         sigma_hats = []
         # mu_hats = [m for m in means]
@@ -247,8 +247,8 @@ class TAP(nn.Module):
 
                 updated_mean_t_c = means[t][c] + mu_hat_t_c
                 # NOTE
-                # tap_momentum = 0.40
-                # updated_mean_t_c = (1 - tap_momentum) * means[t][c] + (tap_momentum * updated_mean_t_c)
+                if tap_momentum is not None:
+                    updated_mean_t_c = (1 - tap_momentum) * means[t][c] + (tap_momentum * updated_mean_t_c)
                 mu_hats.append(updated_mean_t_c) 
 
                 # NOTE 
