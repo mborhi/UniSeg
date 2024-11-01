@@ -288,7 +288,7 @@ def penalize_out_of_domain(means, domain=[-1, 1]):
 
     return 0.5 * (lower_diff_mean + higher_diff_mean)
 
-def get_non_uniform_dynamic_sep_loss( means_pred, covs_pred, min_dists, csep=2):
+def get_non_uniform_dynamic_sep_loss(means_pred, covs_pred, min_dists, csep=2):
     total_loss = 0 # torch.tensor([0])
     for p in range(len(means_pred)):
         means_p = means_pred[p]
@@ -302,6 +302,7 @@ def get_non_uniform_dynamic_sep_loss( means_pred, covs_pred, min_dists, csep=2):
                     cov_k_eval = torch.max(torch.real(torch.linalg.eigvals(cov_k)))
 
                     pred_min_dist = torch.sqrt(csep * torch.max(cov_c_eval, cov_k_eval)) * len(means_pred)
+                    # pred_min_dist = csep * torch.sqrt(torch.max(cov_c_eval, cov_k_eval) * len(means_pred))
                     m = np.min((pred_min_dist.detach().cpu().numpy(), max(min_dists[p], min_dists[q])))
                     # m = np.max((pred_min_dist.detach().cpu().numpy(), max(min_dists[p], min_dists[q]))) # NOTE
                     

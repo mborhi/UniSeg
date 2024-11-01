@@ -952,6 +952,8 @@ class TAPFeatureExtractor_DP(UniSeg_model):
             for tidx in range(num_tasks)
         ]
 
+        self.q_update_size = 25
+
         self.ood_detection_mode = ood_detection_mode
 
         if ood_detection_mode:
@@ -1041,12 +1043,12 @@ class TAPFeatureExtractor_DP(UniSeg_model):
 
         # NOTE
         # extract + permute dims for DP 
-        lst_gt_extractions = []
-        for i, feature in enumerate(features): # for each level of the deep supervision
-            gt_extractions = [extract_task_set(feature, gt_seg[i], c, keep_dims=True).permute(1, 0) for c in target_classes[i]]
-            lst_gt_extractions.append(gt_extractions)
+        # lst_gt_extractions = []
+        # for i, feature in enumerate(features): # for each level of the deep supervision
+        #     gt_extractions = [extract_task_set(feature, gt_seg[i], c, keep_dims=True).permute(1, 0) for c in target_classes[i]]
+        #     lst_gt_extractions.append(gt_extractions)
         
-        tc_inds = self.update_queues(lst_gt_extractions, target_classes, task_id, update_size=5, task_specific=True)
+        # tc_inds = self.update_queues(lst_gt_extractions, target_classes, task_id, update_size=5, task_specific=True)
         # self.adjust_dist_params(tp_feats, task_id, tc_inds)
 
         # seg = self.full_segment(features[0], task_id)
@@ -1067,7 +1069,7 @@ class TAPFeatureExtractor_DP(UniSeg_model):
             lst_gt_correct_extractions.append(gt_correct_extractions)
 
         lst_gt_extractions = lst_gt_correct_extractions # NOTE
-        tc_inds = self.update_queues(lst_gt_correct_extractions, target_classes, task_id, task_specific=True, update_size=25)
+        tc_inds = self.update_queues(lst_gt_correct_extractions, target_classes, task_id, task_specific=True, update_size=self.q_update_size)
         
         # return features, lst_gt_extractions[0], tc_inds
         # return features, lst_gt_extractions, tc_inds
@@ -1338,7 +1340,6 @@ class TAPFeatureExtractor_DP(UniSeg_model):
             return self.forward_inference(x, task_id=task_id, **kwargs)
 
     def segment(self, features: torch.Tensor, component_indices=None, task=None, return_probs=False):
-
         b = features.size(0)
         h, w, d = tuple(features.shape[2:])
         bview_features = features.permute(0, 2, 3, 4, 1).reshape(b, -1, self.feature_space_dim)

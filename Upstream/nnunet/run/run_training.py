@@ -259,14 +259,13 @@ def main():
             if valbest:
                 trainer.load_best_checkpoint(train=False)
             else:
-                # trainer.load_final_checkpoint(train=False)
                 # fname = "/data/nnUNet_trained_models/test_tune_check/3d_fullres/Task094_10taskWithBraTS2023/UniSegExtractorMod_Trainer__DoDNetPlans/fold_0/model_ep_010.model"
                 # fname = "/data/checkpoints/model_ep_600.model"
                 if args.checkpoint_path is not None:
                     fname = args.checkpoint_path
+                    trainer.load_checkpoint(fname, train=False)
                 else:
-                    fname = "/data/checkpoints/model_best.model"
-                trainer.load_checkpoint(fname, train=False)
+                    trainer.load_final_checkpoint(train=False)
                 for t in range(trainer.total_task_num):
                     trainer.network.set_feature_space_distribution_parameters(trainer.tasks_mus[t], trainer.tasks_sigs[t], trainer.tasks_weights[t], task=t)
 

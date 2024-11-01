@@ -563,6 +563,7 @@ class NetworkTrainer(object):
             self.to_log = np.arange(self.total_task_num)
             self.recalc_dist = True
             self.recalced = False
+            self.first = True
             epoch_start_time = time()
             train_losses_epoch = []
 
@@ -589,8 +590,9 @@ class NetworkTrainer(object):
                     # if _ == 10: break # NOTE
 
             # if self.epoch > 0 and (self.epoch + 1) % self.update_target_iter == 0:
-            if self.epoch > 0: #and self.recalced and (self.epoch + 1) % self.update_target_iter == 0:
+            # if self.epoch > 0: #and self.recalced and (self.epoch + 1) % self.update_target_iter == 0:
             # if self.epoch > 0 and self.recalced and (self.epoch + 1) % self.update_target_iter == 0:
+            if self.epoch > 0 and not self.first:
                 # self.tap_amp_grad_scaler.unscale_(self.tap_optimizer)
                 # torch.nn.utils.clip_grad_norm_(self.tap.parameters(), 12)
                 # self.tap_amp_grad_scaler.step(self.tap_optimizer)
@@ -840,6 +842,7 @@ class NetworkTrainer(object):
         self.update_eval_criterion_MA()
 
         continue_training = self.manage_patience()
+        # continue_training = False
         return continue_training
 
     def update_train_loss_MA(self):
