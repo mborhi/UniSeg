@@ -17,6 +17,7 @@ import torch
 from torch import nn
 from nnunet.utilities.nd_softmax import softmax_helper
 from nnunet.training.network_training.nnUNetTrainerV2 import nnUNetTrainerV2
+from nnunet.training.loss_functions.dice_loss import SoftDiceLoss
 
 
 # taken from https://github.com/JunMa11/SegLoss/blob/master/test/nnUNetV2/loss_functions/focal_loss.py
@@ -193,3 +194,41 @@ class FocalLossV2(nn.Module):
         else:
             loss = loss.sum()
         return loss
+
+class Focal_and_DC_Loss(nn.Module):
+
+    def __init__(self, dice_kwargs, focal_kwargs, aggregate="sum", weight_focal=1, weight_dice=1, log_dice=False, ignore_label=None) -> None:
+        super(Focal_and_DC_Loss, self).__init__()
+        if ignore_label is not None:
+            focal_kwargs['reduction'] = 'none'
+        self.log_dice = log_dice
+        self.weight_dice = weight_dice
+        self.weight_focal = weight_focal
+        self.aggregate = aggregate
+
+        self.ignore_label = ignore_label
+
+        self.dc = SoftDiceLoss(apply_nonlin=softmax_helper, **dice_kwargs)
+        self.focal = FocalLossV2(**focal_kwargs)
+
+
+    def forward(self, net_output, target):
+        if self.ignore_label is not None:
+            assert target.shape[1] == 1, 'not implemented for one hot encoding'
+            mask = target != self.ignore_label
+            target[~mask] = 0
+            mask = mask.float()
+        else:
+            mask = None
+
+        dc_loss = self.dc(net_output, target, loss_mask=mask) if self.weight_dice != 0 else 0
+        if self.log_dice:
+            dc_loss = -torch.log(-dc_loss)
+
+        focal_loss = self.focal(net_output, target)
+
+        if self.aggregate == "sum":
+            result = self.weight_focal * focal_loss + self.weight_dice * dc_loss
+        else:
+            raise NotImplementedError("nah son") # reserved for other stuff (later)
+        return result

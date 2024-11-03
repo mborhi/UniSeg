@@ -561,7 +561,8 @@ class UniSeg_model(Generic_UNet):
             x = self.tu[u](x)
             x = torch.cat((x, skips[-(u + 1)]), dim=1)
             x = self.conv_blocks_localization[u](x)
-            seg_outputs.append(self.seg_outputs[u](x)) # NOTE
+            # seg_outputs.append(self.seg_outputs[u](x)) # NOTE current standard
+            
             # seg_outputs.append(self.final_extractors[u](self.seg_outputs[u](x))) # NOTE
             # seg_outputs.append(self.final_tanh(self.seg_outputs[u](x))) # NOTE
             # seg_outputs.append(self.final_sigmoid(self.seg_outputs[u](x))) # NOTE
@@ -570,7 +571,8 @@ class UniSeg_model(Generic_UNet):
 
             ## assumes feature dim independence, then models distribution of each feature dim
             # seg_outputs.append(torch.amax(self.seg_outputs[u](x), 1, keepdim=True)) # NOTE
-            # if u + 1 == len(self.tu):
+            if u + 1 == len(self.tu):
+                seg_outputs.append(self.seg_outputs[u](x))
             #     # seg_outputs.append(self.final_tanh(x))
             #     # seg_outputs.append(self.final_tanh(self.final_conv(x)))
             #     # seg_outputs.append(F.normalize(self.final_extractor(x), dim=1))
@@ -579,7 +581,8 @@ class UniSeg_model(Generic_UNet):
             #     seg_outputs.append(self.final_tanh(self.seg_outputs[u](x))) # NOTE
             #     # seg_outputs.append(self.final_dc_nonlin(self.seg_outputs[u](x))) # NOTE
             #     # seg_outputs.append(self.final_sigmoid(self.seg_outputs[u](x))) # NOTE
-            # else:
+            else:
+                seg_outputs.append(self.final_dc_nonlin(self.seg_outputs[u](x)))
             #     # seg_outputs.append(self.final_nonlin(self.seg_outputs[u](x)))
             #     # seg_outputs.append(self.final_dc_nonlin(self.seg_outputs[u](x)))
             #     seg_outputs.append(self.final_tanh(self.seg_outputs[u](x)))
@@ -1043,12 +1046,12 @@ class TAPFeatureExtractor_DP(UniSeg_model):
 
         # NOTE
         # extract + permute dims for DP 
-        # lst_gt_extractions = []
-        # for i, feature in enumerate(features): # for each level of the deep supervision
-        #     gt_extractions = [extract_task_set(feature, gt_seg[i], c, keep_dims=True).permute(1, 0) for c in target_classes[i]]
-        #     lst_gt_extractions.append(gt_extractions)
+        lst_gt_extractions = []
+        for i, feature in enumerate(features): # for each level of the deep supervision
+            gt_extractions = [extract_task_set(feature, gt_seg[i], c, keep_dims=True).permute(1, 0) for c in target_classes[i]]
+            lst_gt_extractions.append(gt_extractions)
         
-        # tc_inds = self.update_queues(lst_gt_extractions, target_classes, task_id, update_size=5, task_specific=True)
+        tc_inds = self.update_queues(lst_gt_extractions, target_classes, task_id, update_size=5, task_specific=True)
         # self.adjust_dist_params(tp_feats, task_id, tc_inds)
 
         # seg = self.full_segment(features[0], task_id)
@@ -1058,6 +1061,8 @@ class TAPFeatureExtractor_DP(UniSeg_model):
             # features[i] = self.full_segment(feature, task_id)
             seg, seg_probs = self.full_segment(feature, task_id, return_probs=True)
             segs.append(seg)
+            if i != 0:
+                seg_probs = feature
             segs_probs.append(seg_probs)
 
         # tc_inds = target_classes 

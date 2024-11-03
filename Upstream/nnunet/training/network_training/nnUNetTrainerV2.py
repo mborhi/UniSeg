@@ -47,6 +47,7 @@ class nnUNetTrainerV2(nnUNetTrainer):
                          deterministic, fp16)
         self.max_num_epochs = 1000
         self.initial_lr = 1e-4 # NOTE changed from 1e-2
+        # self.initial_lr = 1e-2 # NOTE changed from 1e-2
         self.deep_supervision_scales = None
         self.ds_loss_weights = None
         self.pin_memory = True

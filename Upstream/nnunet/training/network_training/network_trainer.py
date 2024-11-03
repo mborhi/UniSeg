@@ -579,7 +579,6 @@ class NetworkTrainer(object):
 
                         tbar.set_postfix(loss=l)
                         train_losses_epoch.append(l)
-                        break # NOTE
             else:
                 for _ in range(self.num_batches_per_epoch):
                     self.print_to_log_file("iteration:", _)
@@ -590,9 +589,9 @@ class NetworkTrainer(object):
                     # if _ == 10: break # NOTE
 
             # if self.epoch > 0 and (self.epoch + 1) % self.update_target_iter == 0:
-            # if self.epoch > 0: #and self.recalced and (self.epoch + 1) % self.update_target_iter == 0:
+            if self.epoch > 0: #and self.recalced and (self.epoch + 1) % self.update_target_iter == 0:
             # if self.epoch > 0 and self.recalced and (self.epoch + 1) % self.update_target_iter == 0:
-            if self.epoch > 0 and not self.first:
+            # if self.epoch > 0 and not self.first:
                 # self.tap_amp_grad_scaler.unscale_(self.tap_optimizer)
                 # torch.nn.utils.clip_grad_norm_(self.tap.parameters(), 12)
                 # self.tap_amp_grad_scaler.step(self.tap_optimizer)

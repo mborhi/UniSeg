@@ -35,6 +35,7 @@ from nnunet.training.dataloading.dataset_loading import unpack_dataset
 from nnunet.training.loss_functions.dist_match_loss import DynamicDistMatchingLoss
 from nnunet.training.loss_functions.deep_supervision import MixedDSLoss
 from nnunet.training.loss_functions.dice_loss import DC_and_CE_loss, SoftDiceLoss, get_tp_fp_fn_tn
+from nnunet.training.loss_functions.focal_loss import Focal_and_DC_Loss
 from torch.nn.parallel import DistributedDataParallel as DDP
 from nnunet.utilities.sep import component_wise_kl_div, measure_change, is_positive_definite, pen_domain, get_non_uniform_dynamic_sep_loss
 from nnunet.utilities.gmm import get_choleskys
@@ -117,7 +118,8 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
         self.total_task_num = len(self.task.keys()) if not single_task else 1 # NOTE
         self.batch_size = batch_size
         # self.num_batches_per_epoch = (50 * self.total_task_num) #// (num_gpus * (self.batch_size // 2)) #int((50 // num_gpus) * self.total_task_num)
-        self.num_batches_per_epoch = (3 * self.total_task_num) #// (num_gpus * self.batch_size) #int((50 // num_gpus) * self.total_task_num)
+        self.num_batches_per_epoch = int((50 // self.batch_size) * self.total_task_num)
+        # self.num_batches_per_epoch = (3 * self.total_task_num) #// (num_gpus * self.batch_size) #int((50 // num_gpus) * self.total_task_num)
         # self.num_val_batches_per_epoch = self.num_batches_per_epoch // self.total_task_num#// 5
         print("num batches per epoch:", self.num_batches_per_epoch)
         # print("num batches per val epoch:", self.num_val_batches_per_epoch)
@@ -448,7 +450,9 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
             # self.loss = MixedDSLoss(main_loss=self.main_loss, ds_loss=self.ds_loss, weight_factors=self.ds_loss_weights)
             # self.loss = MultipleOutputLoss2(DC_and_CE_loss({'batch_dice': self.batch_dice, 'smooth': 1e-5, 'do_bg': False}, {}), self.ds_loss_weights)
             # self.loss = MixedDSLoss(main_loss=self.main_loss, ds_loss=self.ds_loss, dice_loss=dc_loss, weight_factors=self.ds_loss_weights)
+            # apply_nonlin=None, alpha=None, gamma=2, balance_index=0, smooth=1e-5, size_average=True
             self.sanity_loss = MultipleOutputLoss2(loss=DC_and_CE_loss({'batch_dice': self.batch_dice, 'smooth': 1e-5, 'do_bg': False}, {}), weight_factors=self.ds_loss_weights)
+            # self.sanity_loss = MultipleOutputLoss2(loss=Focal_and_DC_Loss({'batch_dice': self.batch_dice, 'smooth': 1e-5, 'do_bg': False}, {}), weight_factors=self.ds_loss_weights)
             
             self.initialize_optimizer_and_scheduler()
             # self.network = DDP(self.network, device_ids=[self.local_rank])
@@ -516,8 +520,8 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
         self.optimizer.zero_grad()
         # self.recalc_dist = False
         # if self.epoch > 0 and self.recalc_dist:# and (self.epoch + 1) % self.update_target_iter == 0:
-        # if self.epoch > 0 and self.recalc_dist:# and (self.epoch + 1) % self.update_target_iter == 0:
-        if self.recalc_dist and not self.first:
+        if self.epoch > 0 and self.recalc_dist:# and (self.epoch + 1) % self.update_target_iter == 0:
+        # if self.recalc_dist and not self.first:
             self.recalc_targets()
             # if self.n_iter_not_improved >= 3:
             #     self.recalc_targets()
@@ -637,16 +641,16 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
         # NOTE revise
         # self.loss.main_loss.dist_weights = self.weights
 
-        if True:
+        # if True:
         # if False:
             # self.allocate_targets(component_optimal_ns)
-            for tidx in range(self.total_task_num):
-                # self.allocate_targets([10 for _ in range(self.num_components)], tidx)
-                self.allocate_targets([self.max_gmm_comps for _ in range(self.task_class[tidx])], tidx)
+        for tidx in range(self.total_task_num):
+            # self.allocate_targets([10 for _ in range(self.num_components)], tidx)
+            self.allocate_targets([self.max_gmm_comps for _ in range(self.task_class[tidx])], tidx)
 
-            self.n_iter_not_improved = 0
+        self.n_iter_not_improved = 0
 
-            self.recalced = True
+        self.recalced = True
         # else:
         #     # Prune
         #     for task_idx in range(self.total_task_num):
@@ -807,8 +811,8 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
         input_tc_inds = [list(range(self.max_gmm_comps)) for t in range(self.task_class[task_idx])]
 
         # self.tap_optimizer.zero_grad()
-        # tap_momentum = 0.4
-        tap_momentum = 1 - np.power(self.epoch / self.max_num_epochs, 2)
+        tap_momentum = 0.4
+        # tap_momentum = 1 - np.power(self.epoch / self.max_num_epochs, 2)
         # tap_momentum = min(0.3 + (self.epoch / self.max_num_epochs), 0.45)
         self.tap_tasks_optimizer[task_idx].zero_grad()
         for e in range(15):
@@ -1419,14 +1423,13 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
         # Find the maximum variance under which the distributions are still well-separated 
         # max_var = min_dist / np.sqrt(d)
         # max_var = np.square(min_dist / csep) / d
-        # max_var = np.power((min_dist / self.csep).detach().cpu().numpy(), 2) / d
+        max_var = np.power((min_dist / self.csep).detach().cpu().numpy(), 2) / d
         # max_var = np.power(min_dist / self.csep, 2) / d
-        max_var = (min_dist - 1e-04) / (self.csep * np.sqrt(d))
-        
+        # max_var = (min_dist - 1e-04) / (self.csep * np.sqrt(d))
 
         # return optimal_target.detach(), min_dist, max_var
-        return optimal_target.detach(), min_dist.detach(), np.square(max_var.detach())
-        # return optimal_target.detach(), min_dist.detach(), max_var#.detach()
+        # return optimal_target.detach(), min_dist.detach(), np.square(max_var.detach())
+        return optimal_target.detach(), min_dist.detach(), max_var#.detach()
 
 
     def partition_interval(self, intervals, center, m):
@@ -1620,8 +1623,8 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
             centers, min_dist, max_var = self.optimal_sep(num_classes, self.feature_space_dim)
             min_dists = [min_dist for _ in range(len(min_dists))]
 
-        mus, sigs = self.init_gmm_centers(centers, self.feature_space_dim, min_dists, csep)
-        # mus, sigs  = self.init_optim_gmm_centers(centers, self.feature_space_dim, min_dists, csep)
+        # mus, sigs = self.init_gmm_centers(centers, self.feature_space_dim, min_dists, csep)
+        mus, sigs  = self.init_optim_gmm_centers(centers, self.feature_space_dim, min_dists, csep)
         weights = self.init_uniform_mixture_weights()
 
         return mus, sigs, weights, min_dists
