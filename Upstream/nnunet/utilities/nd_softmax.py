@@ -19,3 +19,6 @@ import torch.nn.functional as F
 
 softmax_helper = lambda x: F.softmax(x, 1)
 
+def identity_helper(x, *args, **kwargs):
+    return x
+

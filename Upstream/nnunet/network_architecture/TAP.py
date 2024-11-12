@@ -138,6 +138,8 @@ class TAP(nn.Module):
             nn.ModuleList([
                 # eig(\Sigma_tc) + \mu_tc + t + c
                 nn.Linear(feature_space_dim + feature_space_dim + 1 + 1, 256), 
+                # nn.Linear(feature_space_dim + feature_space_dim + gmm_comps + feature_space_dim, 256), 
+                # nn.Linear(feature_space_dim + feature_space_dim, 256), 
                 # nn.Linear((feature_space_dim * (num_components*10)) + (1 * (num_components*10)) + 1, 256), 
                 nn.PReLU(), 
                 nn.Linear(256, 128),
@@ -230,8 +232,16 @@ class TAP(nn.Module):
                 input_means = means[t][c].reshape(-1)[None, :]#.repeat(x.size(0), 1).detach().to(device=x.device)
                 input_vars = vars[t][c].reshape(-1)[None, :]#.to(device=means[0].device)
 
+                one_hot_vec_comp_idx = torch.zeros(1, self.gmm_comps, device=input_means.device)
+                one_hot_vec_comp_idx[:, comp_idx] = 1.
+                one_hot_vec_cls_idx = torch.zeros(1, self.feature_space_dim, device=input_means.device)
+                one_hot_vec_cls_idx[:, task_id] = 1.
+
                 # input = torch.cat((input_means, input_vars, task_id), -1).to(dtype=torch.float16)
-                input = torch.cat((input_means, input_vars, task_id, comp_idx), -1).to(dtype=torch.float32).detach().clone()
+                # NOTE
+                input = torch.cat((input_means, input_vars, task_id, comp_idx), -1).to(dtype=torch.float32).detach().clone() # Original
+                # input = torch.cat((input_means, input_vars, one_hot_vec_cls_idx, one_hot_vec_comp_idx), -1).to(dtype=torch.float32).detach().clone()
+                # input = torch.cat((input_means, input_vars), -1).to(dtype=torch.float32).detach().clone()
                 # mu_hat_t_c = torch.mean(self.mu_mods[t][c](input), dim=0) # averaged along batch
                 mu_hat_t_c = torch.mean(self.f(input, self.mu_mods[t][c]), dim=0) # averaged along batch
                 # sigma_hat_t_c = torch.mean(self.sig_mods[t][c](input), dim=0) # averaged along batch

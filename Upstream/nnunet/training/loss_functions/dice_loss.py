@@ -353,9 +353,9 @@ class DC_and_CE_loss(nn.Module):
             dc_loss = -torch.log(-dc_loss)
 
         ce_loss = self.ce(net_output, target[:, 0].long()) if self.weight_ce != 0 else 0
-        if self.ignore_label is not None:
-            ce_loss *= mask[:, 0]
-            ce_loss = ce_loss.sum() / mask.sum()
+        # if self.ignore_label is not None:
+        #     ce_loss *= mask[:, 0]
+        #     ce_loss = ce_loss.sum() / mask.sum()
 
         if self.aggregate == "sum":
             result = self.weight_ce * ce_loss + self.weight_dice * dc_loss

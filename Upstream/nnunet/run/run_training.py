@@ -242,9 +242,9 @@ def main():
                 # fname = "/data/checkpoints/model_ep_600.model"
                 if args.checkpoint_path is not None:
                     fname = args.checkpoint_path
+                    trainer.load_checkpoint(fname, train=True)
                 else:
-                    fname = "/data/checkpoints/model_best.model"
-                trainer.load_checkpoint(fname, train=True)
+                    trainer.load_latest_checkpoint()
                 for t in range(trainer.total_task_num):
                     trainer.network.set_feature_space_distribution_parameters(trainer.tasks_mus[t], trainer.tasks_sigs[t], trainer.tasks_weights[t], task=t)
             elif (not args.continue_training) and (args.pretrained_weights is not None):

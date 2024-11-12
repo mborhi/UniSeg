@@ -1,4 +1,4 @@
-from nnunet.utilities.nd_softmax import softmax_helper
+from nnunet.utilities.nd_softmax import softmax_helper, identity_helper
 from torch import nn
 import torch
 import numpy as np
@@ -487,7 +487,8 @@ class UniSeg_model(Generic_UNet):
                 self.upscale_logits_ops.append(Upsample(scale_factor=tuple([int(i) for i in cum_upsample[usl + 1]]),
                                                         mode=upsample_mode))
             else:
-                self.upscale_logits_ops.append(lambda x: x)
+                # self.upscale_logits_ops.append(lambda x: x)
+                self.upscale_logits_ops.append(identity_helper)
 
         if not dropout_in_localization:
             self.dropout_op_kwargs['p'] = old_dropout_p
@@ -961,6 +962,7 @@ class TAPFeatureExtractor_DP(UniSeg_model):
 
         if ood_detection_mode:
             self.thresholds = [None for tidx in range(num_tasks)]
+            # self.thresholds = [0.46685976679755287 for tidx in range(num_tasks)]
 
     def fit_task_gmms(self, X, task, cidx):
 
@@ -1440,8 +1442,12 @@ class TAPFeatureExtractor_DP(UniSeg_model):
         correct_classification_probs_avg = []
         for class_idx in range(self.task_to_num_classes[task_id]):
             # unsqueeze to "batch"
-            class_log_probs = torch.vstack([task_gmm.score(sample.unsqueeze(0), component_indices=None)[..., class_idx] for sample in task_queues[class_idx]])
-            avg_class_prob = torch.mean(torch.exp(class_log_probs))
+            # need to apply softmax
+            # class_probs = torch.vstack([task_gmm.score(sample.unsqueeze(0), component_indices=None)[..., class_idx] for sample in task_queues[class_idx]])
+            class_probs = torch.vstack([F.softmax(task_gmm.score(sample.unsqueeze(0), component_indices=None), dim=1)[..., class_idx] for sample in task_queues[class_idx]])
+            # avg_class_prob = torch.mean(torch.exp(class_probs))
+            avg_class_prob = torch.mean(class_probs)
+            print(f"Class {class_idx}, average prob: {avg_class_prob}")
             correct_classification_probs_avg.append(avg_class_prob.item())
 
         self.thresholds[task_id] = np.mean(correct_classification_probs_avg)

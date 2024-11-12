@@ -26,7 +26,7 @@ from batchgenerators.utilities.file_and_folder_operations import *
 from multiprocessing import Pool
 import traceback
 from time import sleep
-from nnunet.inference.segmentation_export import save_segmentation_nifti_from_softmax
+from nnunet.inference.segmentation_export import save_segmentation_nifti_from_softmax, save_softmax_nifti_from_softmax_gt_size, save_softmax_nifti_from_softmax_alt
 from tqdm import tqdm
 from nnunet.training.data_augmentation.data_augmentation_moreDA import get_moreDA_augmentation_uniseg
 from nnunet.training.loss_functions.deep_supervision import MultipleOutputLoss2
@@ -42,6 +42,7 @@ from nnunet.utilities.gmm import get_choleskys
 from nnunet.utilities.preloaded_targets import get_targets
 from nnunet.utilities.wandb_util import wandb_log_outputs, test_img_log, test_img_log_color
 from nnunet.utilities.tensor_utilities import sum_tensor
+from nnunet.utilities.nd_softmax import identity_helper
 import copy 
 import wandb
 
@@ -96,12 +97,12 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
         #     2: [0, 1], 
         #     3: [0, 1, 2], 
         # }
-        if ood_detection_mode:
-            self.task = {"BraT":0}
-            self.task_class = {0: 4}
-            self.task_id_class_lst_mapping = {
-                0: [0, 1, 2, 3]
-            }
+        # if ood_detection_mode:
+        #     self.task = {"BraT":0}
+        #     self.task_class = {0: 4}
+        #     self.task_id_class_lst_mapping = {
+        #         0: [0, 1, 2, 3]
+        #     }
         if single_task:
             self.task = { "pros":0, }
             self.task_class = {0: 2}
@@ -116,6 +117,7 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
         print("task_class", self.task_class)
         self.visual_epoch = -1
         self.total_task_num = len(self.task.keys()) if not single_task else 1 # NOTE
+        # self.total_task_num = 10
         self.batch_size = batch_size
         # self.num_batches_per_epoch = (50 * self.total_task_num) #// (num_gpus * (self.batch_size // 2)) #int((50 // num_gpus) * self.total_task_num)
         self.num_batches_per_epoch = int((50 // self.batch_size) * self.total_task_num)
@@ -188,7 +190,13 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
         #                             dropout_op_kwargs,
         #                             net_nonlin, net_nonlin_kwargs, True, False, lambda x: x, InitWeights_He(1e-2),
         #                             self.net_num_pool_op_kernel_sizes, self.net_conv_kernel_sizes, False, True, True)
-        uniseg_args = (self.patch_size, self.total_task_num, [1, 2, 4], self.base_num_features, self.num_components,
+        # uniseg_args = (self.patch_size, self.total_task_num, [1, 2, 4], self.base_num_features, self.num_components,
+        #                             len(self.net_num_pool_op_kernel_sizes),
+        #                             self.conv_per_stage, 2, conv_op, norm_op, norm_op_kwargs, dropout_op,
+        #                             dropout_op_kwargs,
+        #                             net_nonlin, net_nonlin_kwargs, True, False, lambda x: x, InitWeights_He(1e-2),
+        #                             self.net_num_pool_op_kernel_sizes, self.net_conv_kernel_sizes, False, True, True)
+        uniseg_args = (self.patch_size, 10, [1, 2, 4], self.base_num_features, self.num_components,
                                     len(self.net_num_pool_op_kernel_sizes),
                                     self.conv_per_stage, 2, conv_op, norm_op, norm_op_kwargs, dropout_op,
                                     dropout_op_kwargs,
@@ -453,6 +461,10 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
             # apply_nonlin=None, alpha=None, gamma=2, balance_index=0, smooth=1e-5, size_average=True
             self.sanity_loss = MultipleOutputLoss2(loss=DC_and_CE_loss({'batch_dice': self.batch_dice, 'smooth': 1e-5, 'do_bg': False}, {}), weight_factors=self.ds_loss_weights)
             # self.sanity_loss = MultipleOutputLoss2(loss=Focal_and_DC_Loss({'batch_dice': self.batch_dice, 'smooth': 1e-5, 'do_bg': False}, {}), weight_factors=self.ds_loss_weights)
+
+            self.sanity_loss.loss.ignore_label = 3
+            self.sanity_loss.loss.dc.ignore_label = 3
+            self.sanity_loss.loss.ce.ignore_index = 3
             
             self.initialize_optimizer_and_scheduler()
             # self.network = DDP(self.network, device_ids=[self.local_rank])
@@ -820,7 +832,7 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
             # new_mus, new_covs = self.tap.forward_dedicated(self.mus, input_covs, input_tc_inds)
             # new_mus, new_covs = self.tap.forward_dedicated(self.mus, input_covs, input_tc_inds, with_update=True)
             # new_mus, new_covs = self.task_taps[task_idx].forward_dedicated(self.tasks_mus[task_idx], input_covs, input_tc_inds, with_update=True)
-            new_mus, new_covs = self.network.task_taps[task_idx].forward_dedicated(self.tasks_mus[task_idx], input_covs, input_tc_inds, with_update=True, tap_momentum=None)
+            new_mus, new_covs = self.network.task_taps[task_idx].forward_dedicated(self.tasks_mus[task_idx], input_covs, input_tc_inds, with_update=True, tap_momentum=tap_momentum)
                 # Prune the unneeded mus
             pruned_mus, pruned_covs = [], []
             em_mus, em_covs = [], []
@@ -1035,6 +1047,7 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
 
         export_pool = Pool(8)
         results = []
+        ood_results = []
 
         for k in tqdm(self.dataset_val.keys()):
             properties = load_pickle(self.dataset[k]['properties_file'])
@@ -1072,9 +1085,7 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
 
                 softmax_pred = softmax_pred[:self.task_class[int(task_id)]]
 
-
-
-                if save_softmax:
+                if save_softmax or self.network.ood_detection_mode:
                     softmax_fname = join(output_folder, fname + ".npz")
                     if self.network.ood_detection_mode:
                         anomaly_fname = join(output_folder, fname + "_anomaly_prob" + ".npz")
@@ -1109,12 +1120,29 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
                                                          )
                                )
                 if self.network.ood_detection_mode:
-                    results.append(export_pool.starmap_async(save_segmentation_nifti_from_softmax,
+                    # results.append(export_pool.starmap_async(save_segmentation_nifti_from_softmax,
+                    #                                         ((anomaly_probabilities, join(output_folder, fname + "_anomaly_prob" + ".nii.gz"),
+                    #                                         properties, interpolation_order, self.regions_class_order,
+                    #                                         None, None,
+                    #                                         join(output_folder, fname + "_anomaly_prob" + ".npz"), None, force_separate_z,
+                    #                                         interpolation_order_z),
+                    #                                         )
+                    #                                         )
+                    #             )
+                    # ood_results.append(export_pool.starmap_async(save_softmax_nifti_from_softmax_gt_size,
+                    #                                         ((anomaly_probabilities, join(output_folder, fname + "_anomaly_prob" + ".nii.gz"),
+                    #                                         properties, interpolation_order, self.regions_class_order, 
+                    #                                         identity_helper, [],
+                    #                                         join(output_folder, fname + "_anomaly_prob" + ".npz"), None, force_separate_z, 
+                    #                                         interpolation_order),
+                    #                                         )
+                    #                                         )
+                    #             )
+                    ood_results.append(export_pool.starmap_async(save_softmax_nifti_from_softmax_alt,
                                                             ((anomaly_probabilities, join(output_folder, fname + "_anomaly_prob" + ".nii.gz"),
-                                                            properties, interpolation_order, self.regions_class_order,
+                                                            properties,
                                                             None, None,
-                                                            join(output_folder, fname + "_anomaly_prob" + ".npz"), None, force_separate_z,
-                                                            interpolation_order_z),
+                                                            join(output_folder, fname + "_anomaly_prob" + ".npz")),
                                                             )
                                                             )
                                 )
@@ -1126,7 +1154,10 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
                 pred_gt_tuples.append([join(output_folder, fname + "_anomaly" + ".nii.gz"),
                                     join(self.gt_niftis_folder, fname + ".nii.gz")])
 
+            # break
+
         _ = [i.get() for i in results]
+        _ = [i.get() for i in ood_results]
         self.print_to_log_file("finished prediction")
 
         # # evaluate raw predictions
@@ -1171,6 +1202,11 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
             if not success:
                 raise OSError(f"Something went wrong while copying nifti files to {gt_nifti_folder}. See above for the trace.")
 
+        if self.network.ood_detection_mode:
+            anomaly_pred_folder = join(self.output_folder_base, "anomaly_preds")
+            maybe_mkdir_p(anomaly_pred_folder)
+            np.save(os.path.join(anomaly_pred_folder, "thresholds.npy"), self.network.thresholds)
+            
         self.network.train(current_mode)
 
         self.network.do_ds = ds
@@ -1662,5 +1698,3 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
             tasks_min_dist.append(max(min_dists))
 
         return tasks_mus, tasks_sigs, tasks_weights, tasks_min_dists, tasks_min_dist
-
-    
