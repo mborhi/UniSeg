@@ -395,8 +395,10 @@ class NetworkTrainer(object):
         curr_state_dict_keys = list(self.network.state_dict().keys())
         # if state dict comes from nn.DataParallel but we use non-parallel model here then the state dict keys do not
         # match. Use heuristic to make it match
+        original_param_names = []
         for k, value in checkpoint['state_dict'].items():
             key = k
+            original_param_names.append(key)
             if key not in curr_state_dict_keys and key.startswith('module.'):
                 key = key[7:]
             new_state_dict[key] = value
@@ -426,13 +428,37 @@ class NetworkTrainer(object):
                     if f'tap_{tsk_idx}_amp_grad_scaler' in checkpoint.keys():
                         self.tap_tasks_amp_grad_scaler[tsk_idx].load_state_dict(checkpoint[f'tap_{tsk_idx}_amp_grad_scaler'])
 
+
+        curr_state_dict = self.network.state_dict()
+        for key in curr_state_dict.keys():
+            # Check if key (or modified key) exists in checkpoint's state dict
+            checkpoint_key = key
+            if checkpoint_key not in checkpoint['state_dict'] and 'module.' + checkpoint_key in checkpoint['state_dict']:
+                checkpoint_key = 'module.' + checkpoint_key
+            
+            # Use value from checkpoint if available, otherwise use current state dict's value
+            new_state_dict[key] = checkpoint['state_dict'].get(checkpoint_key, curr_state_dict[key])
+        
         self.network.load_state_dict(new_state_dict)
         # self.tap.load_state_dict(new_tap_state_dict)
         self.epoch = checkpoint['epoch']
         if train:
             optimizer_state_dict = checkpoint['optimizer_state_dict']
+            # if optimizer_state_dict is not None:
+            #     self.optimizer.load_state_dict(optimizer_state_dict)
+            # Assuming `scheduler` is your learning rate scheduler
+            self.optimizer = torch.optim.Adam(self.network.parameters(), lr=1e-3, weight_decay=self.weight_decay, amsgrad=True)  # Use your specific optimizer
+            torch.optim.Adam(self.network.parameters(), self.initial_lr, weight_decay=self.weight_decay,
+                                        amsgrad=True)
+
+            # optimizer_state_dict = checkpoint.get('optimizer_state_dict', None)
             if optimizer_state_dict is not None:
-                self.optimizer.load_state_dict(optimizer_state_dict)
+                current_params = {id(p): p for group in self.optimizer.param_groups for p in group['params']}
+                for param_id, state in optimizer_state_dict['state'].items():
+                    if param_id in current_params:
+                        # filtered_state[param_id] = state
+                        self.optimizer = state
+
 
             if self.lr_scheduler is not None and hasattr(self.lr_scheduler, 'load_state_dict') and checkpoint[
                 'lr_scheduler_state_dict'] is not None:
@@ -441,10 +467,25 @@ class NetworkTrainer(object):
             if issubclass(self.lr_scheduler.__class__, _LRScheduler):
                 self.lr_scheduler.step(self.epoch)
 
-            tap_optimizers_state_dicts = checkpoint['tap_optimizers_state_dicts']
+            # tap_optimizers_state_dicts = checkpoint['tap_optimizers_state_dicts']
+            # for tidx, tap_opt_state_dict in enumerate(tap_optimizers_state_dicts):
+            #     if tap_opt_state_dict is not None:
+            #         self.tap_tasks_optimizer[tidx].load_state_dict(tap_opt_state_dict)
+            # tap_optimizers_state_dicts = checkpoint.get('tap_optimizers_state_dicts', [])
+            # for tidx, tap_opt_state_dict in enumerate(tap_optimizers_state_dicts):
+            #     self.tap_tasks_optimizer[tidx] = torch.optim.Adam(self.network.task_taps[tidx].parameters(), lr=1e-3, weight_decay=self.weight_decay, amsgrad=True)
+            tap_optimizers_state_dicts = checkpoint.get('tap_optimizers_state_dicts', [])
             for tidx, tap_opt_state_dict in enumerate(tap_optimizers_state_dicts):
+                self.tap_tasks_optimizer[tidx] = torch.optim.Adam(self.network.task_taps[tidx].parameters(), lr=1e-3, weight_decay=self.weight_decay, amsgrad=True)
                 if tap_opt_state_dict is not None:
-                    self.tap_tasks_optimizer[tidx].load_state_dict(tap_opt_state_dict)
+
+                    current_params = {id(p): p for group in self.tap_tasks_optimizer[tidx].param_groups for p in group['params']}
+                    
+                    # Filter out any parameters in the checkpoint state that don't exist in the current model
+                    for param_id, state in tap_opt_state_dict['state'].items():
+                        if param_id in current_params:
+                            # filtered_state[param_id] = state
+                            self.tap_tasks_optimizer[tidx][param_id] = state
 
         self.all_tr_losses, self.all_val_losses, self.all_val_losses_tr_mode, self.all_val_eval_metrics = checkpoint[
             'plot_stuff']
@@ -498,7 +539,8 @@ class NetworkTrainer(object):
         #     pass 
         # else:
         #     self.network.train_gmms(self.dynamic_dist_network.feature_space_qs, self.mus, self.sigs)
-
+        self.freeze_except(original_param_names) # NOTE
+        self.restart_epoch = self.epoch
         # after the training is done, the epoch is incremented one more time in my old code. This results in
         # self.epoch = 1001 for old trained models when the epoch is actually 1000. This causes issues because
         # len(self.all_tr_losses) = 1000 and the plot function will fail. We can easily detect and correct that here
@@ -702,6 +744,10 @@ class NetworkTrainer(object):
 
 
             epoch_end_time = time()
+
+
+            if self.restart_epoch is not None and self.epoch - self.restart_epoch == 10:
+                self.unfreeze_all()
             
 
             if not continue_training:
@@ -962,3 +1008,21 @@ class NetworkTrainer(object):
         plt.savefig(join(self.output_folder, "lr_finder.png"))
         plt.close()
         return log_lrs, losses
+
+    # Freeze all parameters except for the ones in the subset
+    ### save all the parameter names in the save file, 
+    # freeze all that have been saved
+    # unfreeze all that were originally saved
+    def freeze_except(self, original_param_names):
+        
+        for name, param in self.network.named_parameters():
+            # if any(layer_name in name for layer_name in trainable_layer_names):
+            if any(layer_name in name for layer_name in original_param_names):
+                param.requires_grad = True  # Keep these layers trainable
+            else:
+                param.requires_grad = False  # Freeze all other layers
+
+    # Unfreeze all parameters to resume training
+    def unfreeze_all(self):
+        for param in self.network.parameters():
+            param.requires_grad = True

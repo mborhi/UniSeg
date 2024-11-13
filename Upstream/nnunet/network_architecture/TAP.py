@@ -39,12 +39,12 @@ class TAP(nn.Module):
         ])
 
         # NOTE changed to scalar out
-        # self.sig_mods = nn.ModuleList([
-        #     # self.create_mod(feature_space_dim, gmm_comps) for _ in range(num_components)
-        #     # self.create_mod_(feature_space_dim, gmm_comps) for _ in range(num_components)
-        #     self.create_mod_list(feature_space_dim, gmm_comps) for _ in range(num_components)
-        #     # self.create_mod_list(feature_space_dim, gmm_comps, scalar_out=True) for _ in range(num_components)
-        # ])
+        self.sig_mods = nn.ModuleList([
+            # self.create_mod(feature_space_dim, gmm_comps) for _ in range(num_components)
+            # self.create_mod_(feature_space_dim, gmm_comps) for _ in range(num_components)
+            self.create_mod_list(feature_space_dim, gmm_comps) for _ in range(num_components)
+            # self.create_mod_list(feature_space_dim, gmm_comps, scalar_out=True) for _ in range(num_components)
+        ])
         
         # self.task_mu_modules = nn.ModuleList([
         #     nn.Sequential(
@@ -132,8 +132,9 @@ class TAP(nn.Module):
         return mod
     
     def create_mod_list(self, feature_space_dim, gmm_comps, scalar_out=False):
-        final_out_size = feature_space_dim if not scalar_out else 1
-        # final_act = nn.Tanh() if not scalar_out else nn.ReLU()
+        # final_out_size = feature_space_dim if not scalar_out else 1
+        final_out_size = feature_space_dim if not scalar_out else feature_space_dim
+        final_act = nn.Tanh() if not scalar_out else nn.ReLU()
         mod = nn.ModuleList([
             nn.ModuleList([
                 # eig(\Sigma_tc) + \mu_tc + t + c
@@ -146,8 +147,8 @@ class TAP(nn.Module):
                 nn.PReLU(), 
                 nn.Linear(128, final_out_size),
                 # nn.Linear(128, feature_space_dim),
-                nn.Tanh(), 
-                # final_act,
+                # nn.Tanh(), 
+                final_act,
             ])
             for t in range(gmm_comps)
             # for t in range(1)
@@ -245,7 +246,7 @@ class TAP(nn.Module):
                 # mu_hat_t_c = torch.mean(self.mu_mods[t][c](input), dim=0) # averaged along batch
                 mu_hat_t_c = torch.mean(self.f(input, self.mu_mods[t][c]), dim=0) # averaged along batch
                 # sigma_hat_t_c = torch.mean(self.sig_mods[t][c](input), dim=0) # averaged along batch
-                # sigma_hat_t_c = torch.mean(self.f(input, self.sig_mods[t][c]), dim=0) # averaged along batch
+                sigma_hat_t_c = torch.mean(self.f(input, self.sig_mods[t][c]), dim=0) # averaged along batch
                 # sigma_hat_t_c = self.sig_mods[t][c](input)
                 # mu_hat_t_c = torch.mean(self.task_mu_modules[0](input), dim=0) # averaged along batch
 
@@ -256,16 +257,19 @@ class TAP(nn.Module):
                 # updated_var_t_c = (1 - self.momentum) * vars[t][c] + (self.momentum * sigma_hat_t_c) + 0.0001 # for numerical stability
 
                 updated_mean_t_c = means[t][c] + mu_hat_t_c
+                updated_var_t_c = sigma_hat_t_c * vars[t][c]
                 # NOTE
                 if tap_momentum is not None:
                     updated_mean_t_c = (1 - tap_momentum) * means[t][c] + (tap_momentum * updated_mean_t_c)
+                    updated_var_t_c = (1 - tap_momentum) * vars[t][c] + (tap_momentum * updated_var_t_c) #+ 1e-04
                 mu_hats.append(updated_mean_t_c) 
+                sigma_hats.append(updated_var_t_c)
 
                 # NOTE 
                 # updated_var_t_c = vars[t][c] + sigma_hat_t_c + 1e-04
-                # updated_var_t_c = sigma_hat_t_c * vars[t][c] + 1e-04
-                updated_var_t_c = vars[t][c] #+ sigma_hat_t_c + 1e-04
-                sigma_hats.append(updated_var_t_c)
+                # updated_var_t_c = sigma_hat_t_c * vars[t][c] #+ 1e-04
+                # updated_var_t_c = vars[t][c] #+ sigma_hat_t_c + 1e-04
+                # sigma_hats.append(updated_var_t_c)
                 # else :
                 #     # torch.diag(updated_var_t_c)
                 #     mu_hats.append(mu_hat_t_c)

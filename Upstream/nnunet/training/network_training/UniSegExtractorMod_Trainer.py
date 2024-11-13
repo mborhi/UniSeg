@@ -119,9 +119,10 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
         self.total_task_num = len(self.task.keys()) if not single_task else 1 # NOTE
         # self.total_task_num = 10
         self.batch_size = batch_size
-        # self.num_batches_per_epoch = (50 * self.total_task_num) #// (num_gpus * (self.batch_size // 2)) #int((50 // num_gpus) * self.total_task_num)
-        self.num_batches_per_epoch = int((50 // self.batch_size) * self.total_task_num)
-        # self.num_batches_per_epoch = (3 * self.total_task_num) #// (num_gpus * self.batch_size) #int((50 // num_gpus) * self.total_task_num)
+        self.num_batches_per_epoch = (50 * self.total_task_num) #// (num_gpus * (self.batch_size // 2)) #int((50 // num_gpus) * self.total_task_num)
+        # self.num_batches_per_epoch = (3 * self.total_task_num) #// (num_gpus * (self.batch_size // 2)) #int((50 // num_gpus) * self.total_task_num)
+        # self.num_batches_per_epoch = int((50 // self.batch_size) * self.total_task_num)
+        # self.num_batches_per_epoch = 50 #// (num_gpus * self.batch_size) #int((50 // num_gpus) * self.total_task_num)
         # self.num_val_batches_per_epoch = self.num_batches_per_epoch // self.total_task_num#// 5
         print("num batches per epoch:", self.num_batches_per_epoch)
         # print("num batches per val epoch:", self.num_val_batches_per_epoch)
@@ -462,9 +463,9 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
             self.sanity_loss = MultipleOutputLoss2(loss=DC_and_CE_loss({'batch_dice': self.batch_dice, 'smooth': 1e-5, 'do_bg': False}, {}), weight_factors=self.ds_loss_weights)
             # self.sanity_loss = MultipleOutputLoss2(loss=Focal_and_DC_Loss({'batch_dice': self.batch_dice, 'smooth': 1e-5, 'do_bg': False}, {}), weight_factors=self.ds_loss_weights)
 
-            self.sanity_loss.loss.ignore_label = 3
-            self.sanity_loss.loss.dc.ignore_label = 3
-            self.sanity_loss.loss.ce.ignore_index = 3
+            # self.sanity_loss.loss.ignore_label = 3
+            # self.sanity_loss.loss.dc.ignore_label = 3
+            # self.sanity_loss.loss.ce.ignore_index = 3
             
             self.initialize_optimizer_and_scheduler()
             # self.network = DDP(self.network, device_ids=[self.local_rank])
@@ -847,7 +848,18 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
                 keep_mus = new_mus[c*self.max_gmm_comps:c*self.max_gmm_comps + optimal_n]
                 keep_covs = new_covs[c*self.max_gmm_comps:c*self.max_gmm_comps + optimal_n]
                 keep_mus = torch.vstack(keep_mus).reshape(optimal_n, self.feature_space_dim)
-                keep_covs = torch.stack([torch.diag(d) for d in keep_covs])
+                # keep_covs = torch.stack([torch.diag(d) for d in keep_covs])
+                reconstructed_keep_covs = []
+                for i, d in enumerate(keep_covs):
+                    # d is a vector of dim == feature_dim_size containing eigenvalues
+                    _, V = torch.linalg.eigh(self.tasks_sigs[task_idx][c][i])
+                    new_cov = V @ torch.diag(d) @ V.T#torch.linalg.inv(V)
+                    # print(f"V shape: {V.shape}")
+                    # print(f"new cov shape: {new_cov.shape}")
+                    # print(f"shape otherwise cov shape: {torch.diag(d).shape}")
+                    reconstructed_keep_covs.append(new_cov)
+                keep_covs = torch.stack(reconstructed_keep_covs)
+                # keep_covs = torch.stack(keep_covs)
 
                 pruned_mus.append(keep_mus)
                 pruned_covs.append(keep_covs.double())
@@ -938,18 +950,19 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
                 # self.sigs[t] = new_covs[t]
                 # self.sigs[t] = (1 - tap_momentum) * self.sigs[t][:component_optimal_ns[t]] + (tap_momentum * new_covs[t])
             # updated_cov = (1 - tap_momentum) * self.sigs[t][:component_optimal_ns[t]] + (tap_momentum * pruned_covs_[t])
-            # updated_cov = (1 - tap_momentum) * self.tasks_sigs[task_idx][t][:component_optimal_ns[t]] + (tap_momentum * pruned_covs_[t])
+            updated_cov = (1 - tap_momentum) * self.tasks_sigs[task_idx][t][:component_optimal_ns[t]] + (tap_momentum * pruned_covs_[t])
+            updated_cov = torch.clamp(updated_cov, min=1e-4)
             # self.print_to_log_file(f"fin updated cov: {updated_cov}")
             # if not is_positive_definite(updated_cov):
             #     # updated_cov = self.sigs[t][:component_optimal_ns[t]]
             #     updated_cov = self.tasks_sigs[task_idx][t][:component_optimal_ns[t]]
-            # updated_covs.append(updated_cov)
+            updated_covs.append(updated_cov)
             # updated_covs.append(updated_cov.clone())
                 # self.sigs[t] = (1 - tap_momentum) * self.sigs[t] + (tap_momentum * pruned_covs[t])
 
         # self.mus, self.sigs = updated_mus, updated_covs
-        # self.tasks_mus[task_idx], self.tasks_sigs[task_idx] = updated_mus, updated_covs
-        self.tasks_mus[task_idx] = updated_mus # NOTE
+        self.tasks_mus[task_idx], self.tasks_sigs[task_idx] = updated_mus, updated_covs
+        # self.tasks_mus[task_idx] = updated_mus # NOTE
         # self.network.set_feature_space_distribution_parameters(updated_mus, updated_covs, self.tasks_weights[task_idx], task=task_idx)
         
         # self.network.weights = self.weights
