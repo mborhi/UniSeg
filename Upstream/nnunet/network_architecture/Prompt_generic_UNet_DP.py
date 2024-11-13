@@ -562,7 +562,7 @@ class UniSeg_model(Generic_UNet):
             x = self.tu[u](x)
             x = torch.cat((x, skips[-(u + 1)]), dim=1)
             x = self.conv_blocks_localization[u](x)
-            # seg_outputs.append(self.seg_outputs[u](x)) # NOTE current standard
+            seg_outputs.append(self.seg_outputs[u](x)) # NOTE current standard
             
             # seg_outputs.append(self.final_extractors[u](self.seg_outputs[u](x))) # NOTE
             # seg_outputs.append(self.final_tanh(self.seg_outputs[u](x))) # NOTE
@@ -572,8 +572,8 @@ class UniSeg_model(Generic_UNet):
 
             ## assumes feature dim independence, then models distribution of each feature dim
             # seg_outputs.append(torch.amax(self.seg_outputs[u](x), 1, keepdim=True)) # NOTE
-            if u + 1 == len(self.tu):
-                seg_outputs.append(self.seg_outputs[u](x))
+            # if u + 1 == len(self.tu):
+            #     seg_outputs.append(self.seg_outputs[u](x))
             #     # seg_outputs.append(self.final_tanh(x))
             #     # seg_outputs.append(self.final_tanh(self.final_conv(x)))
             #     # seg_outputs.append(F.normalize(self.final_extractor(x), dim=1))
@@ -582,8 +582,8 @@ class UniSeg_model(Generic_UNet):
             #     seg_outputs.append(self.final_tanh(self.seg_outputs[u](x))) # NOTE
             #     # seg_outputs.append(self.final_dc_nonlin(self.seg_outputs[u](x))) # NOTE
             #     # seg_outputs.append(self.final_sigmoid(self.seg_outputs[u](x))) # NOTE
-            else:
-                seg_outputs.append(self.final_dc_nonlin(self.seg_outputs[u](x)))
+            # else:
+            #     seg_outputs.append(self.final_dc_nonlin(self.seg_outputs[u](x)))
             #     # seg_outputs.append(self.final_nonlin(self.seg_outputs[u](x)))
             #     # seg_outputs.append(self.final_dc_nonlin(self.seg_outputs[u](x)))
             #     seg_outputs.append(self.final_tanh(self.seg_outputs[u](x)))
@@ -1063,8 +1063,8 @@ class TAPFeatureExtractor_DP(UniSeg_model):
             # features[i] = self.full_segment(feature, task_id)
             seg, seg_probs = self.full_segment(feature, task_id, return_probs=True)
             segs.append(seg)
-            if i != 0:
-                seg_probs = feature
+            # if i != 0:
+            #     seg_probs = feature
             segs_probs.append(seg_probs)
 
         # tc_inds = target_classes 
