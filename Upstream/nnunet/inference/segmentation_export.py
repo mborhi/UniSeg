@@ -408,6 +408,7 @@ def save_softmax_nifti_from_softmax_alt(segmentation_softmax: Union[str, np.ndar
                                          # interpolation_order_z: int = 0, verbose: bool = True
                                     ):
     """
+    https://github.com/MIC-DKFZ/nnUNet/issues/1050
     This is a utility for writing segmentations to nifto and npz. It requires the data to have been preprocessed by
     GenericPreprocessor because it depends on the property dictionary output (dct) to know the geometry of the original
     data. segmentation_softmax does not have to have the same size in pixels as the original data, it will be

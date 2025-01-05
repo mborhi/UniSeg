@@ -54,20 +54,20 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
         super().__init__(plans_file, fold, output_folder, dataset_directory, batch_dice, stage, unpack_data,
                          deterministic, fp16)
         self.max_num_epochs = max_num_epochs
-        self.task = {"live":0, "kidn":1, "hepa":2, "panc":3, "colo":4, "lung":5, "sple":6, "sub-":7, "pros":8, "BraT":9}
-        self.task_class = {0: 3, 1: 3, 2: 3, 3: 3, 4: 2, 5: 2, 6: 2, 7: 2, 8: 2, 9: 4}
-        self.task_id_class_lst_mapping = {
-            0: [0, 1, 2], 
-            1: [0, 1, 2], 
-            2: [0, 1, 2],
-            3: [0, 1, 2],
-            4: [0, 1], 
-            5: [0, 1],
-            6: [0, 1],
-            7: [0, 1],
-            8: [0, 1],
-            9: [0, 1, 2, 3], 
-        }
+        # self.task = {"live":0, "kidn":1, "hepa":2, "panc":3, "colo":4, "lung":5, "sple":6, "sub-":7, "pros":8, "BraT":9}
+        # self.task_class = {0: 3, 1: 3, 2: 3, 3: 3, 4: 2, 5: 2, 6: 2, 7: 2, 8: 2, 9: 4}
+        # self.task_id_class_lst_mapping = {
+        #     0: [0, 1, 2], 
+        #     1: [0, 1, 2], 
+        #     2: [0, 1, 2],
+        #     3: [0, 1, 2],
+        #     4: [0, 1], 
+        #     5: [0, 1],
+        #     6: [0, 1],
+        #     7: [0, 1],
+        #     8: [0, 1],
+        #     9: [0, 1, 2, 3], 
+        # }
         # self.task = {"live":0, "kidn":1, "hepa":2, "panc":3, "colo":4, "lung":5, "sple":6, "sub-":7, "pros":8}
         # self.task_class = {0: 3, 1: 3, 2: 3, 3: 3, 4: 2, 5: 2, 6: 2, 7: 2, 8: 2}
         # self.task_id_class_lst_mapping = {
@@ -97,12 +97,12 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
         #     2: [0, 1], 
         #     3: [0, 1, 2], 
         # }
-        # if ood_detection_mode:
-        #     self.task = {"BraT":0}
-        #     self.task_class = {0: 4}
-        #     self.task_id_class_lst_mapping = {
-        #         0: [0, 1, 2, 3]
-        #     }
+        if ood_detection_mode:
+            self.task = {"BraT":0}
+            self.task_class = {0: 4}
+            self.task_id_class_lst_mapping = {
+                0: [0, 1, 2, 3]
+            }
         if single_task:
             self.task = { "pros":0, }
             self.task_class = {0: 2}
@@ -149,6 +149,7 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
         self.max_gmm_comps = gmm_comps
 
         self.recalc_dist = False
+        self.restart_epoch = None
 
     def initialize_network(self):
         """
@@ -380,6 +381,7 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
             # Current best
             # vars = [1/30, 1/30, 1/30]
             vars = [1/30, 1/30, 1/30, 1/30]
+            # csep = 1.5
             csep = 1.5
             self.csep = csep
             domain = [-1,1]
@@ -531,7 +533,6 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
         self.log_img_wandb = False
         print(f"recalc: {self.recalc_dist}")
         self.optimizer.zero_grad()
-        # self.recalc_dist = False
         # if self.epoch > 0 and self.recalc_dist:# and (self.epoch + 1) % self.update_target_iter == 0:
         if self.epoch > 0 and self.recalc_dist:# and (self.epoch + 1) % self.update_target_iter == 0:
         # if self.recalc_dist and not self.first:
@@ -848,17 +849,19 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
                 keep_mus = new_mus[c*self.max_gmm_comps:c*self.max_gmm_comps + optimal_n]
                 keep_covs = new_covs[c*self.max_gmm_comps:c*self.max_gmm_comps + optimal_n]
                 keep_mus = torch.vstack(keep_mus).reshape(optimal_n, self.feature_space_dim)
-                # keep_covs = torch.stack([torch.diag(d) for d in keep_covs])
-                reconstructed_keep_covs = []
-                for i, d in enumerate(keep_covs):
-                    # d is a vector of dim == feature_dim_size containing eigenvalues
-                    _, V = torch.linalg.eigh(self.tasks_sigs[task_idx][c][i])
-                    new_cov = V @ torch.diag(d) @ V.T#torch.linalg.inv(V)
-                    # print(f"V shape: {V.shape}")
-                    # print(f"new cov shape: {new_cov.shape}")
-                    # print(f"shape otherwise cov shape: {torch.diag(d).shape}")
-                    reconstructed_keep_covs.append(new_cov)
-                keep_covs = torch.stack(reconstructed_keep_covs)
+                keep_covs = torch.stack([torch.diag(d) for d in keep_covs])
+                # reconstructed_keep_covs = []
+                # for i, d in enumerate(keep_covs):
+                #     # d is a vector of dim == feature_dim_size containing eigenvalues
+                #     _, V = torch.linalg.eigh(self.tasks_sigs[task_idx][c][i])
+                #     new_cov = V @ torch.diag(d) @ V.T#torch.linalg.inv(V)
+                #     new_cov = torch.clamp(new_cov, min=1e-4)
+                #     new_cov = tap_momentum * self.tasks_sigs[task_idx][c][i] + (1 - tap_momentum) * new_cov
+                #     # print(f"V shape: {V.shape}")
+                #     # print(f"new cov shape: {new_cov.shape}")
+                #     # print(f"shape otherwise cov shape: {torch.diag(d).shape}")
+                #     reconstructed_keep_covs.append(new_cov)
+                # keep_covs = torch.stack(reconstructed_keep_covs)
                 # keep_covs = torch.stack(keep_covs)
 
                 pruned_mus.append(keep_mus)
@@ -961,8 +964,8 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
                 # self.sigs[t] = (1 - tap_momentum) * self.sigs[t] + (tap_momentum * pruned_covs[t])
 
         # self.mus, self.sigs = updated_mus, updated_covs
-        self.tasks_mus[task_idx], self.tasks_sigs[task_idx] = updated_mus, updated_covs
-        # self.tasks_mus[task_idx] = updated_mus # NOTE
+        # self.tasks_mus[task_idx], self.tasks_sigs[task_idx] = updated_mus, updated_covs
+        self.tasks_mus[task_idx] = updated_mus # NOTE
         # self.network.set_feature_space_distribution_parameters(updated_mus, updated_covs, self.tasks_weights[task_idx], task=task_idx)
         
         # self.network.weights = self.weights
@@ -1538,6 +1541,7 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
         K = self.gmm_comps
         N = len(centers)
         new_csep = 2
+        # new_csep = 1.5
         # s = new_csep / 10
         s = 1 / new_csep
         all_comp_centers = [[] for _ in range(N)]
@@ -1690,6 +1694,17 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
             self.print_to_log_file(f"task {task_id} initial weights: {task_weights}")
             self.print_to_log_file(f"task {task_id} min dists: {min_dists}")
 
+            # rand_shuffle = torch.randperm(task_num_classes)
+            # self.print_to_log_file(f"Random perm: {rand_shuffle}")
+            # task_mus = task_mus[rand_shuffle, ...]
+            # task_weights = task_weights[rand_shuffle, ...]
+            # task_sigs = task_sigs[rand_shuffle, ...]
+            # min_dists = [min_dists[idx] for idx in rand_shuffle]
+            # self.print_to_log_file("After:")
+            # self.print_to_log_file(f"task {task_id} initial means: {task_mus}")
+            # self.print_to_log_file(f"task {task_id} initial vars: {task_sigs}")
+            # self.print_to_log_file(f"task {task_id} initial weights: {task_weights}")
+            # self.print_to_log_file(f"task {task_id} min dists: {min_dists}")
             # move to cuda
             if torch.cuda.is_available():
                 if isinstance(task_mus, list):

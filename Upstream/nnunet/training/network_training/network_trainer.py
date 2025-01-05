@@ -504,14 +504,15 @@ class NetworkTrainer(object):
         self.print_to_log_file(f"loaded distr. params: {len(self.tasks_mus)}, {len(self.tasks_sigs)}, {len(self.tasks_weights)}")
         if isinstance(self.network, TAPFeatureExtractor_DP):
             for t in range(self.total_task_num):
-                self.tasks_sigs[t] = self.tasks_sigs[t].cuda()
+                # self.tasks_sigs[t] = self.tasks_sigs[t].cuda()
                 # for class_idx in range(self.task_class[t]):
                 for class_idx in range(len(self.tasks_sigs[t])):
                     # self.print_to_log_file(f"prev size {t}: {[m.size() for m in self.mus[t]]}")
                     self.tasks_mus[t][class_idx] = self.tasks_mus[t][class_idx].cuda()
-                    # self.tasks_sigs[t][class_idx] = self.tasks_sigs[t][class_idx].cuda()
+                    self.tasks_sigs[t][class_idx] = self.tasks_sigs[t][class_idx].cuda()
                     self.tasks_weights[t][class_idx] = self.tasks_weights[t][class_idx].cuda()
-                self.network.set_feature_space_distribution_parameters(self.tasks_mus[t], self.tasks_sigs[t].cuda(), self.tasks_weights[t], task=t)
+                # self.network.set_feature_space_distribution_parameters(self.tasks_mus[t], self.tasks_sigs[t].cuda(), self.tasks_weights[t], task=t)
+                self.network.set_feature_space_distribution_parameters(self.tasks_mus[t], self.tasks_sigs[t], self.tasks_weights[t], task=t)
                 self.network.construct_task_feature_space_gmm_implicit(t)
             for t in range(self.total_task_num):
                 for c in range(self.task_class[t]):
