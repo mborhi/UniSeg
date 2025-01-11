@@ -2,10 +2,29 @@ import nibabel as nib
 import os
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
+from matplotlib.patches import Patch
 import numpy as np
 from scipy.ndimage import zoom
 import SimpleITK as sitk
 from sklearn.metrics import roc_curve
+
+def compute_pro(pred_labels, gt_labels):
+    """
+    Computes the Pixel-wise Recall-Precision (PRO) metric.
+    :param ood_probs: np.array, OOD probabilities for each pixel
+    :param gt_labels: np.array, ground truth labels for each pixel (1 for OOD, 0 for in-distribution)
+    :param threshold: float, threshold to determine OOD classification based on probability
+    :return: PRO score
+    """
+    # pred_labels = (ood_probs >= threshold).astype(int)
+    true_positive = np.sum((pred_labels == 1) & (gt_labels == 1))
+    false_positive = np.sum((pred_labels == 1) & (gt_labels == 0))
+    false_negative = np.sum((pred_labels == 0) & (gt_labels == 1))
+    
+    precision = true_positive / (true_positive + false_positive) if (true_positive + false_positive) > 0 else 0
+    recall = true_positive / (true_positive + false_negative) if (true_positive + false_negative) > 0 else 0
+    
+    return precision, recall
 
 def find_optimal_threshold(y_scores, y_true, method='youden'):
     """
@@ -52,11 +71,13 @@ def dice_score(gt_slice, pred_slice):
         return 0.0 if intersection == 0 else 0.0  # Handle case of no ground truth or prediction
     return 2.0 * intersection / union
 
-def find_best_slice(gt_volume, pred_volume):
+def find_best_slice(gt_volume, pred_volume, weighted=True):
     best_index = -1
     best_score = 0
     for i in range(gt_volume.shape[2]):
         score = dice_score(gt_volume[:,:,i], pred_volume[:,:,i])
+        if weighted:
+            score *= np.sum(gt_volume[:, :, i] == 1)
         if score > best_score:
             best_score = score
             best_index = i
@@ -92,7 +113,8 @@ def load_nifti_image(filepath):
 # Resize function using SimpleITK
 def resize_image_itk(image, target_shape):
     # Reorder the target shape to match SimpleITK's (depth, height, width) order
-    target_shape_itk = (target_shape[2], target_shape[1], target_shape[0])
+    # target_shape_itk = (target_shape[2], target_shape[1], target_shape[0])
+    target_shape_itk = (target_shape[0], target_shape[1], target_shape[2])
     
     # Convert numpy array to SimpleITK image
     sitk_image = sitk.GetImageFromArray(image)
@@ -114,7 +136,7 @@ def resize_image_itk(image, target_shape):
 
 def visualize_seg(input_image_path, gt_path, prediction_path, uniseg_path, save_path):
     
-    mr_image = np.load(input_image_path, allow_pickle=True)
+    mr_image = np.load(input_image_path)
 
     if len(mr_image.shape) == 4:
         mr_image = mr_image[0]
@@ -123,9 +145,17 @@ def visualize_seg(input_image_path, gt_path, prediction_path, uniseg_path, save_
     pred = load_nifti_image(prediction_path)
     uniseg_pred = load_nifti_image(uniseg_path)
 
+    gt_mask = resize_image_itk(gt_mask, mr_image.shape)
+    pred = resize_image_itk(pred, mr_image.shape)
+    uniseg_pred = resize_image_itk(uniseg_pred, mr_image.shape)
+
+    mr_image = np.transpose(mr_image, (2, 1, 0))
+
     slice_idx, dice_score = find_best_slice(gt_mask, uniseg_pred)
 
-    create_seg_visualization(mr_image, gt_mask, pred, slice_idx, uniseg_pred)
+    print(f"{slice_idx=}, {dice_score=}")
+
+    create_seg_visualization(mr_image, gt_mask, pred, slice_idx, uniseg_pred, save_path=save_path)
 
 
 def visualize_ood_seg(sample = "BraTS-PED-00115-000", with_uniseg=False):
@@ -230,6 +260,25 @@ def create_seg_visualization(mr_image, ground_truth_mask, prediction_mask, img_s
         axs[2].set_title("MR Image with Prediction Uniseg Mask")
         axs[2].axis('off')
 
+    # precision, recall = compute_pro(pred_mask_slice == , gt_mask_slice )
+    # uniseg_precision, uniseg_recall = compute_pro(pred_uniseg_mask_slice, gt_mask_slice)
+    colors = ['red', 'blue', 'green']
+    # Create custom legend
+    legend_elements = [
+        Patch(facecolor=colors[i-1], edgecolor=colors[i-1][0], label=f'Class {i}\nRecall: {compute_pro(pred_mask_slice == i, gt_mask_slice == i)[1]:.2f}, Precision: {compute_pro(pred_mask_slice == i, gt_mask_slice == i)[0]:.2f}')
+        for i in range(1, int(np.max(gt_mask_slice))+1)
+    ]
+
+    # Add the legend to the figure
+    axs[1].legend(handles=legend_elements, loc='lower center', bbox_to_anchor=(0.5, 1.1), ncol=1)
+    if prediction_uniseg_mask is not None:
+        uniseg_legend_elements = [
+            Patch(facecolor=colors[i-1], edgecolor=colors[i-1][0], label=f'Class {i}\nRecall: {compute_pro(pred_uniseg_mask_slice == i, gt_mask_slice == i)[1]:.2f}, Precision: {compute_pro(pred_uniseg_mask_slice == i, gt_mask_slice == i)[0]:.2f}')
+            for i in range(1, int(np.max(gt_mask_slice))+1)
+        ]
+        axs[2].legend(handles=uniseg_legend_elements, loc='lower center', bbox_to_anchor=(0.5, 1.1), ncol=1)
+
+
     plt.tight_layout()
 
     # plt.savefig("ood_visualization")
@@ -240,16 +289,27 @@ def create_seg_visualization(mr_image, ground_truth_mask, prediction_mask, img_s
 
 if __name__ == "__main__":
     
-    base_path = "/data/"
+    pred_base_path = "/data/nnUNet_trained_models/performance_anaylsis_test/3d_fullres/Task094_10taskWithBraTS2023/UniSegExtractorMod_Trainer__DoDNetPlans/fold_0/validation_raw"
+    uniseg_base_path = "/data/nnUNet_trained_models/uniseg-10t-bm/3d_fullres/Task094_10taskWithBraTS2023/UniSeg_Trainer__DoDNetPlans/fold_0/validation_raw"
+    gt_base_path = "/data/nnUNet_trained_models/performance_anaylsis_test/3d_fullres/Task094_10taskWithBraTS2023/UniSegExtractorMod_Trainer__DoDNetPlans/gt_niftis"
+    input_image_base_path = "/data/nnUNet_preprocessed/Task094_10taskWithBraTS2023/DoDNetData_plans_stage0"
+    save_path_base = "visualizations"
 
-    task_name = ""
-    indices = [123]
-
-    base_file_path = os.path.join(base_path, task_name)
+    
+    # task_name = "hepaticvessel"
+    # indices = [25, 18, 1, 8, 369, 375]
+    task_name = "lung"
+    indices = [9, 18, 33, 41]
 
     for ind in indices:
-        file_path = os.path.join(base_path, task_name)
-        visualize_seg()
+        input_image_file_path = os.path.join(input_image_base_path, task_name + f"_{ind:03}.npy")
+        pred_file_path = os.path.join(pred_base_path, task_name + f"_{ind:03}.nii.gz")
+        uniseg_file_path = os.path.join(uniseg_base_path, task_name + f"_{ind:03}.nii.gz")
+        gt_file_path = os.path.join(gt_base_path, task_name + f"_{ind:03}.nii.gz")
+        save_dir = os.path.join(save_path_base, task_name)
+        os.makedirs(save_dir, exist_ok=True)
+        save_path = os.path.join(save_dir, task_name + f"_{ind:03}")
+        visualize_seg(input_image_file_path, gt_file_path, pred_file_path, uniseg_file_path, save_path)
 
     
     
