@@ -112,6 +112,20 @@ def resize_image_itk(image, target_shape):
     resized_image_np = sitk.GetArrayFromImage(resized_image)
     return resized_image_np 
 
+def visualize_seg(input_image_path, gt_path, prediction_path, uniseg_path, save_path):
+    
+    mr_image = np.load(input_image_path, allow_pickle=True)
+
+    if len(mr_image.shape) == 4:
+        mr_image = mr_image[0]
+
+    gt_mask = load_nifti_image(gt_path)
+    pred = load_nifti_image(prediction_path)
+    uniseg_pred = load_nifti_image(uniseg_path)
+
+    slice_idx, dice_score = find_best_slice(gt_mask, uniseg_pred)
+
+    create_seg_visualization(mr_image, gt_mask, pred, slice_idx, uniseg_pred)
 
 
 def visualize_ood_seg(sample = "BraTS-PED-00115-000", with_uniseg=False):
@@ -173,7 +187,7 @@ def visualize_ood_seg(sample = "BraTS-PED-00115-000", with_uniseg=False):
 
     create_seg_visualization(mr_image, ground_truth_mask, ood_pred, best_slice, uniseg_pred)
 
-def create_seg_visualization(mr_image, ground_truth_mask, prediction_mask, img_slice, prediction_uniseg_mask=None):
+def create_seg_visualization(mr_image, ground_truth_mask, prediction_mask, img_slice, prediction_uniseg_mask=None, save_path="visualization.png"):
     mr_slice = mr_image[:, :, img_slice]
     gt_mask_slice = ground_truth_mask[:, :, img_slice]
     pred_mask_slice = prediction_mask[:, :, img_slice]
@@ -218,15 +232,112 @@ def create_seg_visualization(mr_image, ground_truth_mask, prediction_mask, img_s
 
     plt.tight_layout()
 
-    plt.savefig("ood_visualization")
+    # plt.savefig("ood_visualization")
+    plt.savefig(save_path)
     # plt.show()
     plt.close()
 
 
 if __name__ == "__main__":
-    FOLDER = "qual"
-    visualize_ood_seg("BraTS-PED-00082-000", with_uniseg=True)
-    pass
+    
+    base_path = "/data/"
+
+    task_name = ""
+    indices = [123]
+
+    base_file_path = os.path.join(base_path, task_name)
+
+    for ind in indices:
+        file_path = os.path.join(base_path, task_name)
+        visualize_seg()
+
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
     # image_path = os.listdir(os.path.join(FOLDER,"inputs"))
     # gt_path = os.listdir(os.path.join(FOLDER,"ground_truth"))
     # preds_path = os.listdir(os.path.join(FOLDER,"preds"))
@@ -322,6 +433,9 @@ if __name__ == "__main__":
     # s = 0
     # # kidney good case 1: 75, 135
     # # kidney good case 2: 100, 110
+
+    # FOLDER = "qual"
+    # visualize_ood_seg("BraTS-PED-00082-000", with_uniseg=True)
 
 
 
