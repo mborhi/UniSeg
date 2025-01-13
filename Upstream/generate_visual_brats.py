@@ -111,7 +111,7 @@ def load_nifti_image(filepath):
     return np.squeeze(data)
 
 # Resize function using SimpleITK
-def resize_image_itk(image, target_shape):
+def resize_image_itk(image, target_shape, prob=False):
     # Reorder the target shape to match SimpleITK's (depth, height, width) order
     # target_shape_itk = (target_shape[2], target_shape[1], target_shape[0])
     target_shape_itk = (target_shape[0], target_shape[1], target_shape[2])
@@ -156,6 +156,34 @@ def visualize_seg(input_image_path, gt_path, prediction_path, uniseg_path, save_
     print(f"{slice_idx=}, {dice_score=}")
 
     create_seg_visualization(mr_image, gt_mask, pred, slice_idx, uniseg_pred, save_path=save_path)
+
+def visualize_prob_map(input_image_path, gt_path, prob_path, uniseg_path, save_path):
+    
+    mr_image = np.load(input_image_path)
+
+    if len(mr_image.shape) == 4:
+        mr_image = mr_image[0]
+
+    gt_mask = load_nifti_image(gt_path)
+    prob = nib.load(prob_path).get_fdata()
+    # prob = np.transpose(prob, (3, 2, 0, 4, 1))[0]
+    prob = np.transpose(prob, (3, 2, 4, 0, 1))[0]
+    prob_pred = np.amax(prob, 0)
+    pred = np.argmax(prob, 0)
+    uniseg_pred = load_nifti_image(uniseg_path)
+
+    gt_mask = resize_image_itk(gt_mask, mr_image.shape)
+    prob_pred = resize_image_itk(prob_pred, mr_image.shape)
+    pred = resize_image_itk(pred, mr_image.shape)
+    uniseg_pred = resize_image_itk(uniseg_pred, mr_image.shape)
+
+    mr_image = np.transpose(mr_image, (2, 1, 0))
+
+    slice_idx, dice_score = find_best_slice(gt_mask, uniseg_pred)
+
+    print(f"{slice_idx=}, {dice_score=}")
+
+    create_seg_visualization(mr_image, gt_mask, prob_pred, slice_idx, pred, save_path=save_path, prob_map=True, label='ALUMS')
 
 
 def visualize_ood_seg(sample = "BraTS-PED-00115-000", with_uniseg=False):
@@ -217,7 +245,7 @@ def visualize_ood_seg(sample = "BraTS-PED-00115-000", with_uniseg=False):
 
     create_seg_visualization(mr_image, ground_truth_mask, ood_pred, best_slice, uniseg_pred)
 
-def create_seg_visualization(mr_image, ground_truth_mask, prediction_mask, img_slice, prediction_uniseg_mask=None, save_path="visualization.png"):
+def create_seg_visualization(mr_image, ground_truth_mask, prediction_mask, img_slice, prediction_uniseg_mask=None, save_path="visualization.png", prob_map=False, **kwargs):
     mr_slice = mr_image[:, :, img_slice]
     gt_mask_slice = ground_truth_mask[:, :, img_slice]
     pred_mask_slice = prediction_mask[:, :, img_slice]
@@ -248,7 +276,13 @@ def create_seg_visualization(mr_image, ground_truth_mask, prediction_mask, img_s
     # Display the MR image with prediction overlay
     axs[1].imshow(mr_slice, cmap='gray')
     # Create a mask for predicted class 1 (1 is red)
-    axs[1].imshow(np.ma.masked_where(pred_mask_slice == 0, pred_mask_slice), cmap=cmap, alpha=alpha, norm=norm)
+    if not prob_map:
+        axs[1].imshow(np.ma.masked_where(pred_mask_slice == 0, pred_mask_slice), cmap=cmap, alpha=alpha, norm=norm)
+    else:
+        # axs[1].imshow(pred_mask_slice, cmap='viridis', alpha=alpha)
+        im = axs[1].imshow(pred_mask_slice, cmap='viridis', alpha=alpha)
+        cbar = fig.colorbar(im, ax=axs[1], fraction=0.046, pad=0.04)
+        cbar.set_label('Probability')
     axs[1].set_title("MR Image with Prediction Mask")
     axs[1].axis('off')
 
@@ -257,7 +291,8 @@ def create_seg_visualization(mr_image, ground_truth_mask, prediction_mask, img_s
         axs[2].imshow(mr_slice, cmap='gray')
         # Create a mask for predicted uniseg mask class 1 (1 is red)
         axs[2].imshow(np.ma.masked_where(pred_uniseg_mask_slice == 0, pred_uniseg_mask_slice), cmap=cmap, alpha=alpha, norm=norm)
-        axs[2].set_title("MR Image with Prediction Uniseg Mask")
+        label = kwargs['label'] if 'label' in kwargs else 'UniSeg'
+        axs[2].set_title(f"MR Image with Prediction {label} Mask")
         axs[2].axis('off')
 
     # precision, recall = compute_pro(pred_mask_slice == , gt_mask_slice )
@@ -266,7 +301,7 @@ def create_seg_visualization(mr_image, ground_truth_mask, prediction_mask, img_s
     # Create custom legend
     legend_elements = [
         Patch(facecolor=colors[i-1], edgecolor=colors[i-1][0], label=f'Class {i}\nRecall: {compute_pro(pred_mask_slice == i, gt_mask_slice == i)[1]:.2f}, Precision: {compute_pro(pred_mask_slice == i, gt_mask_slice == i)[0]:.2f}')
-        for i in range(1, int(np.max(gt_mask_slice))+1)
+        for i in range(1, int(np.max(gt_mask_slice))+1) if not prob_map
     ]
 
     # Add the legend to the figure
@@ -293,13 +328,20 @@ if __name__ == "__main__":
     uniseg_base_path = "/data/nnUNet_trained_models/uniseg-10t-bm/3d_fullres/Task094_10taskWithBraTS2023/UniSeg_Trainer__DoDNetPlans/fold_0/validation_raw"
     gt_base_path = "/data/nnUNet_trained_models/performance_anaylsis_test/3d_fullres/Task094_10taskWithBraTS2023/UniSegExtractorMod_Trainer__DoDNetPlans/gt_niftis"
     input_image_base_path = "/data/nnUNet_preprocessed/Task094_10taskWithBraTS2023/DoDNetData_plans_stage0"
-    save_path_base = "visualizations"
+    save_path_base = "prob_visualizations"
 
     
     # task_name = "hepaticvessel"
     # indices = [25, 18, 1, 8, 369, 375]
-    task_name = "lung"
-    indices = [9, 18, 33, 41]
+    
+    # task_name = "lung"
+    # indices = [9, 18, 33, 41]
+
+    # task_name = "pancreas"
+    # indices = [330, 325, 316, 267, 261, 244, 236, 229, 215, 210, 67]
+
+    task_name = "colon"
+    indices = [103, 111, 96, 126, 134, 140, 75, 53, 1, 9, 24, 88]
 
     for ind in indices:
         input_image_file_path = os.path.join(input_image_base_path, task_name + f"_{ind:03}.npy")
@@ -309,7 +351,9 @@ if __name__ == "__main__":
         save_dir = os.path.join(save_path_base, task_name)
         os.makedirs(save_dir, exist_ok=True)
         save_path = os.path.join(save_dir, task_name + f"_{ind:03}")
-        visualize_seg(input_image_file_path, gt_file_path, pred_file_path, uniseg_file_path, save_path)
+        # visualize_seg(input_image_file_path, gt_file_path, pred_file_path, uniseg_file_path, save_path)
+        prob_file_path = os.path.join(pred_base_path, task_name + f"_{ind:03}_anomaly_prob.nii.gz")
+        visualize_prob_map(input_image_file_path, gt_file_path, prob_file_path, uniseg_file_path, save_path)
 
     
     
@@ -496,6 +540,3 @@ if __name__ == "__main__":
 
     # FOLDER = "qual"
     # visualize_ood_seg("BraTS-PED-00082-000", with_uniseg=True)
-
-
-

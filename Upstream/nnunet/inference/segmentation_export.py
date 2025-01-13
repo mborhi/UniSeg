@@ -352,7 +352,8 @@ def save_softmax_nifti_from_softmax_gt_size(segmentation_softmax: Union[str, np.
     #     seg_old_spacing = seg_old_spacing_final
 
     bbox = properties_dict.get('crop_bbox')
-    new_shape = [4, *shape_original_before_cropping]
+    # new_shape = [4, *shape_original_before_cropping]
+    new_shape = [seg_old_spacing.shape[0], *shape_original_before_cropping]
     print(f"New shape: {new_shape}")
     print(f"Seg old shape: {seg_old_spacing.shape}")
     print(f"BBox shape: {bbox}")
@@ -382,7 +383,7 @@ def save_softmax_nifti_from_softmax_gt_size(segmentation_softmax: Union[str, np.
     print(f"seg old size post processed: {seg_old_size_postprocessed.shape}")
 
     # seg_resized_itk = sitk.GetImageFromArray(seg_old_size_postprocessed.astype(np.uint8))
-    seg_resized_itk = sitk.GetImageFromArray(seg_old_size_postprocessed.astype(np.float16))
+    seg_resized_itk = sitk.GetImageFromArray(seg_old_size_postprocessed.astype(np.float32), isVector=True)
     seg_resized_itk.SetSpacing(properties_dict['itk_spacing'])
     seg_resized_itk.SetOrigin(properties_dict['itk_origin'])
     seg_resized_itk.SetDirection(properties_dict['itk_direction'])
@@ -390,7 +391,7 @@ def save_softmax_nifti_from_softmax_gt_size(segmentation_softmax: Union[str, np.
 
     if (non_postprocessed_fname is not None) and (seg_postprogess_fn is not None):
         # seg_resized_itk = sitk.GetImageFromArray(seg_old_size.astype(np.uint8))
-        seg_resized_itk = sitk.GetImageFromArray(seg_old_size.astype(np.float16))
+        seg_resized_itk = sitk.GetImageFromArray(seg_old_size.astype(np.float32))
         seg_resized_itk.SetSpacing(properties_dict['itk_spacing'])
         seg_resized_itk.SetOrigin(properties_dict['itk_origin'])
         seg_resized_itk.SetDirection(properties_dict['itk_direction'])
