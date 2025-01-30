@@ -889,6 +889,27 @@ class NetworkTrainer(object):
 
         continue_training = self.manage_patience()
         # continue_training = False
+
+        # save the target distributions
+        # take from model
+        gmm_save_dict = {}
+        for tidx in range(self.num_tasks):
+            task_mus, task_covs, task_weights = self.model.tasks_mus[tidx], self.model.tasks_covs[tidx], self.model.tasks_weights[tidx]
+
+            cls_save_dict = {}
+            for cidx in range(self.task_class[tidx]):
+                cls_mu, cls_cov, cls_weight = task_mus[cidx], task_covs[cidx], task_weights[cidx]
+                cls_save_dict[cidx] = {
+                    "mean": cls_mu.detach().cpu().numpy(), 
+                    "cov": cls_cov.deatch().cpu().numpy(), 
+                    "weight": cls_weight.deatch().cpu().numpy()
+                }
+
+            gmm_save_dict[tidx] = cls_save_dict
+
+        with open(join(self.output_folder, f"model_target_distribution_ep_{self.epoch:03d}.pkl"), 'wb') as f:
+            pickle.dump(gmm_save_dict, f)
+
         return continue_training
 
     def update_train_loss_MA(self):

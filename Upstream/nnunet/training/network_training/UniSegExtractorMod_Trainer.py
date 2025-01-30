@@ -54,20 +54,20 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
         super().__init__(plans_file, fold, output_folder, dataset_directory, batch_dice, stage, unpack_data,
                          deterministic, fp16)
         self.max_num_epochs = max_num_epochs
-        # self.task = {"live":0, "kidn":1, "hepa":2, "panc":3, "colo":4, "lung":5, "sple":6, "sub-":7, "pros":8, "BraT":9}
-        # self.task_class = {0: 3, 1: 3, 2: 3, 3: 3, 4: 2, 5: 2, 6: 2, 7: 2, 8: 2, 9: 4}
-        # self.task_id_class_lst_mapping = {
-        #     0: [0, 1, 2], 
-        #     1: [0, 1, 2], 
-        #     2: [0, 1, 2],
-        #     3: [0, 1, 2],
-        #     4: [0, 1], 
-        #     5: [0, 1],
-        #     6: [0, 1],
-        #     7: [0, 1],
-        #     8: [0, 1],
-        #     9: [0, 1, 2, 3], 
-        # }
+        self.task = {"live":0, "kidn":1, "hepa":2, "panc":3, "colo":4, "lung":5, "sple":6, "sub-":7, "pros":8, "BraT":9}
+        self.task_class = {0: 3, 1: 3, 2: 3, 3: 3, 4: 2, 5: 2, 6: 2, 7: 2, 8: 2, 9: 4}
+        self.task_id_class_lst_mapping = {
+            0: [0, 1, 2], 
+            1: [0, 1, 2], 
+            2: [0, 1, 2],
+            3: [0, 1, 2],
+            4: [0, 1], 
+            5: [0, 1],
+            6: [0, 1],
+            7: [0, 1],
+            8: [0, 1],
+            9: [0, 1, 2, 3], 
+        }
         # self.task = {"live":0, "kidn":1, "hepa":2, "panc":3, "colo":4, "lung":5, "sple":6, "sub-":7, "pros":8}
         # self.task_class = {0: 3, 1: 3, 2: 3, 3: 3, 4: 2, 5: 2, 6: 2, 7: 2, 8: 2}
         # self.task_id_class_lst_mapping = {
@@ -119,8 +119,8 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
         self.total_task_num = len(self.task.keys()) if not single_task else 1 # NOTE
         # self.total_task_num = 10
         self.batch_size = batch_size
-        self.num_batches_per_epoch = (50 * self.total_task_num) #// (num_gpus * (self.batch_size // 2)) #int((50 // num_gpus) * self.total_task_num)
-        # self.num_batches_per_epoch = (3 * self.total_task_num) #// (num_gpus * (self.batch_size // 2)) #int((50 // num_gpus) * self.total_task_num)
+        # self.num_batches_per_epoch = (50 * self.total_task_num) #// (num_gpus * (self.batch_size // 2)) #int((50 // num_gpus) * self.total_task_num)
+        self.num_batches_per_epoch = (3 * self.total_task_num) #// (num_gpus * (self.batch_size // 2)) #int((50 // num_gpus) * self.total_task_num)
         # self.num_batches_per_epoch = int((50 // self.batch_size) * self.total_task_num)
         # self.num_batches_per_epoch = 50 #// (num_gpus * self.batch_size) #int((50 // num_gpus) * self.total_task_num)
         # self.num_val_batches_per_epoch = self.num_batches_per_epoch // self.total_task_num#// 5
@@ -144,7 +144,7 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
         self.update_target_dist = False
         self.return_est_dists = True
         self.loss_type = loss_type
-        self.ood_detection_mode = ood_detection_mode
+        self.ood_detection_mode = True # ood_detection_mode
 
         self.max_gmm_comps = gmm_comps
 
@@ -488,6 +488,7 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
         else:
             self.print_to_log_file('self.was_initialized is True, not running self.initialize again')
 
+        self.TAP_avg_losses_dict = {[] for _ in range(self.total_task_num)}
 
         self.was_initialized = True
 
@@ -646,11 +647,15 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
         return l.detach().cpu().numpy()
 
     def recalc_targets(self):
-        
+        self.epoch_em_iteration_dict = {} #  NOTE for cv study
         for task_idx in range(self.total_task_num):
             # optimal_ns = self.recalc_task_targets(task_idx)
             self.recalc_task_targets(task_idx)
             # task_class_optimal_ns.append(optimal_ns)
+
+        # NOTE save for cv study
+        self.save_EM_iteration_cv()
+
 
         # NOTE revise
         # self.loss.main_loss.dist_weights = self.weights
@@ -695,6 +700,7 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
             self.network.construct_task_feature_space_gmm_implicit(tidx)
 
     def recalc_task_targets(self, task_idx):
+        class_em_convergences = {}
         class_optimal_ns = []
         # for class_idx in range(self.num_components):
         for class_idx in range(self.task_class[task_idx]):
@@ -732,6 +738,12 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
             # best_gmm, _, _  = self.network.fit_gmms(task_class_queue)
             # best_gmm, _, _  = self.network.fit_task_gmms(task_class_queue, task_idx)
             best_gmm, _, _  = self.network.fit_task_gmms(task_class_queue, task_idx, class_idx)
+            ### NOTE convergence of EM study
+            class_em_convergences[class_idx] = {
+                "iters": best_gmm.n_iter_, 
+                "converged": best_gmm.converged_
+            }
+
             mu_hat_c = torch.from_numpy(best_gmm.means_).cuda()
             if best_gmm.covariance_type == "full":
                 sig_hat_c = torch.from_numpy(best_gmm.covariances_).cuda()
@@ -790,6 +802,7 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
             self.tasks_weights[task_idx][class_idx] = torch.stack(new_weights).detach().clone()#.permute(1,0)
 
         # return class_optimal_ns
+        self.epoch_em_iteration_dict[task_idx] = class_em_convergences
 
     def allocate_targets(self, component_optimal_ns, task_idx):
         self.print_to_log_file(f"allocating targets for task {task_idx}")
@@ -829,6 +842,9 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
         # tap_momentum = 1 - np.power(self.epoch / self.max_num_epochs, 2)
         # tap_momentum = min(0.3 + (self.epoch / self.max_num_epochs), 0.45)
         self.tap_tasks_optimizer[task_idx].zero_grad()
+        # ###
+        task_tap_losses = []
+        # ###
         for e in range(15):
             # new_mus, new_covs = self.tap(self.mus, input_covs, input_tc_inds)
             # new_mus, new_covs = self.tap.forward_dedicated(self.mus, input_covs, input_tc_inds)
@@ -885,13 +901,16 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
             # l = self.main_loss.get_non_uniform_dynamic_sep_loss(pruned_mus, pruned_covs, self.min_dists, csep=self.csep) + \
             #         1.5 * component_wise_kl_div(em_mus, em_covs, pruned_mus, pruned_covs) + \
             #         0.5 * dm_pen
+            rho2 = 0.001
+            rho1 = 0.5
             l = get_non_uniform_dynamic_sep_loss(pruned_mus, pruned_covs, self.tasks_min_dists[task_idx], csep=self.csep) + \
-                    0.001 * tap_kl + \
-                    0.5 * dm_pen
+                    rho2 * tap_kl + \
+                    rho1 * dm_pen
             
             self.print_to_log_file(f"tap loss: {l}")
             if self.with_wandb:
                 wandb.log({"tap_loss": l})
+            task_tap_losses.append(l.item())
             # if (e + 1) != 30:
             # self.tap_amp_grad_scaler.scale(l).backward(retain_graph=True)
             # self.tap_amp_grad_scaler.unscale_(self.tap_optimizer)
@@ -908,6 +927,9 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
             self.tap_tasks_amp_grad_scaler[task_idx].step(self.tap_tasks_optimizer[task_idx])
             self.tap_tasks_amp_grad_scaler[task_idx].update()
             self.tap_tasks_optimizer[task_idx].zero_grad()
+        
+
+        self.TAP_avg_losses_dict[task_idx].append(np.mean(task_tap_losses))
 
         pruned_mus_, pruned_covs_ = pruned_mus, pruned_covs
         # pruned_mus_, pruned_covs_ = [], []
@@ -1145,23 +1167,23 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
                     #                                         )
                     #                                         )
                     #             )
-                    # ood_results.append(export_pool.starmap_async(save_softmax_nifti_from_softmax_gt_size,
-                    #                                         ((anomaly_probabilities, join(output_folder, fname + "_anomaly_prob" + ".nii.gz"),
-                    #                                         properties, interpolation_order, self.regions_class_order, 
-                    #                                         identity_helper, [],
-                    #                                         join(output_folder, fname + "_anomaly_prob" + ".npz"), None, force_separate_z, 
-                    #                                         interpolation_order),
-                    #                                         )
-                    #                                         )
-                    #             )
-                    ood_results.append(export_pool.starmap_async(save_softmax_nifti_from_softmax_alt,
+                    ood_results.append(export_pool.starmap_async(save_softmax_nifti_from_softmax_gt_size,
                                                             ((anomaly_probabilities, join(output_folder, fname + "_anomaly_prob" + ".nii.gz"),
-                                                            properties,
-                                                            None, None,
-                                                            join(output_folder, fname + "_anomaly_prob" + ".npz")),
+                                                            properties, interpolation_order, self.regions_class_order, 
+                                                            identity_helper, [],
+                                                            join(output_folder, fname + "_anomaly_prob" + ".npz"), None, force_separate_z, 
+                                                            interpolation_order),
                                                             )
                                                             )
                                 )
+                    # ood_results.append(export_pool.starmap_async(save_softmax_nifti_from_softmax_alt,
+                    #                                         ((anomaly_probabilities, join(output_folder, fname + "_anomaly_prob" + ".nii.gz"),
+                    #                                         properties,
+                    #                                         None, None,
+                    #                                         join(output_folder, fname + "_anomaly_prob" + ".npz")),
+                    #                                         )
+                    #                                         )
+                    #             )
 
             pred_gt_tuples.append([join(output_folder, fname + ".nii.gz"),
                                    join(self.gt_niftis_folder, fname + ".nii.gz")])
@@ -1726,3 +1748,12 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
             tasks_min_dist.append(max(min_dists))
 
         return tasks_mus, tasks_sigs, tasks_weights, tasks_min_dists, tasks_min_dist
+
+
+    def save_EM_iteration_cv(self):
+        with open(join(self.output_folder, f"em_convergence_ep_{self.epoch:03d}.pkl"), 'wb') as f:
+            pickle.dump(self.epoch_em_iteration_dict, f)
+
+    def save_avg_TAP_losses(self):
+        with open(join(self.output_folder, f"TAP_avg_losses_ep_{self.epoch:03d}.pkl"), 'wb') as f:
+            pickle.dump(self.TAP_avg_losses_dict, f)

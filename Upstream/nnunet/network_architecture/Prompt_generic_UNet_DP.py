@@ -1275,13 +1275,13 @@ class TAPFeatureExtractor_DP(UniSeg_model):
         for i in range(num_classes): # i is class; idx for distribution representing class i of `task`
             mu, cov = task_mus[i], task_covs[i]
             if mu.shape[0] == 1:
-                dist =  MultivariateNormal(mu, cov)
+                dist =  MultivariateNormal(mu.cuda(), cov.cuda())
                 task_gmm_component_distributions.append(dist)
                 continue
 
             comp_dists = []
             for t in range(mu.shape[0]):
-                comp_dists.append(MultivariateNormal(mu[t], cov[t])) 
+                comp_dists.append(MultivariateNormal(mu[t].cuda(), cov[t].cuda())) 
 
             categorical = Categorical(task_weights[i])
 
@@ -1455,7 +1455,8 @@ class TAPFeatureExtractor_DP(UniSeg_model):
     def determine_ood(self, predicted_probabilities, task_id):
         task_id = int(task_id[0].item())
         if self.thresholds[task_id] is None:
-            self.calculate_task_ood_threshold(task_id)
+            # self.calculate_task_ood_threshold(task_id)
+            self.thresholds[task_id] = 0.333
         ood_mask = predicted_probabilities < self.thresholds[task_id]
         segmentation_prediction = predicted_probabilities.argmax(0)
         segmentation_prediction[ood_mask.all(0)] = -1
@@ -1584,7 +1585,12 @@ class TAPFeatureExtractor_DP(UniSeg_model):
         del aggregated_nb_of_predictions
 
         if self.ood_detection_mode:
-            predicted_segmentation, anomaly_probabilities = self.determine_ood(aggregated_results, task_id)
+            # predicted_segmentation, anomaly_probabilities = self.determine_ood(aggregated_results, task_id)
+            predicted_segmentation = aggregated_results.argmax(0)
+            anomaly_probabilities = aggregated_results
+            # print(f'predicted seg :{np.unique(predicted_segmentation)} | {np.min(predicted_segmentation)} | {np.max(predicted_segmentation)}')
+            # print(f'aggr res :{np.unique(aggregated_results)} | {np.min(aggregated_results)} | {np.max(aggregated_results)}')
+            # print(f'data :{np.unique(data)} | {np.min(data)} | {np.max(data)}')
             return predicted_segmentation, (aggregated_results, anomaly_probabilities)
 
         if regions_class_order is None:
