@@ -147,22 +147,27 @@ def component_wise_kl_div(means, covs, means_pred, covs_pred, optimal_component_
         else:
             optimal_n = None
 
-        means_p = means_pred[p]
-        for c, mean_c in enumerate(means_p):
+        means_pred_p = means_pred[p]
+        for c, mean_pred_p_c in enumerate(means_pred_p):
             if optimal_n is not None and c > optimal_n:
                 break
             # cov_c = covs_pred[p, c]
-            cov_c = covs_pred[p][c]
+            cov_pred_p_c = covs_pred[p][c]
 
-            if not is_positive_definite(cov_c):
-                total_kl_div = total_kl_div + 100*torch.sum(torch.square(torch.zeros_like(cov_c) - cov_c))
+            if not is_positive_definite(cov_pred_p_c):
+                total_kl_div = total_kl_div + 100*torch.sum(torch.square(torch.zeros_like(cov_pred_p_c) - cov_pred_p_c))
                 continue
             
-            pred_dist = MultivariateNormal(mean_c, cov_c)
+            pred_dist = MultivariateNormal(mean_pred_p_c, cov_pred_p_c)
             # dist = MultivariateNormal(means[p, c], covs[p, c])
             dist = MultivariateNormal(means[p][c], covs[p][c])
 
-            l = kl_divergence(dist, pred_dist)
+            # D_KL(P || Q) = H(P, Q) - H(P)  
+            # this is effectively only the cross entropy, as there is no gradient on the entropy (P is computed w no grad)
+            l = kl_divergence(dist, pred_dist) 
+
+            if c == 0:
+                l = l + pred_dist.entropy() # add -> min => small entropy on background class == more 'conentrated'
 
             total_kl_div = total_kl_div + l
             
@@ -291,25 +296,27 @@ def penalize_out_of_domain(means, domain=[-1, 1]):
 def get_non_uniform_dynamic_sep_loss(means_pred, covs_pred, min_dists, csep=2):
     total_loss = 0 # torch.tensor([0])
     for p in range(len(means_pred)):
-        means_p = means_pred[p]
-        for c, mean_c in enumerate(means_p):
-            cov_c = covs_pred[p][c]
-            cov_c_eval = torch.max(torch.real(torch.linalg.eigvals(cov_c))) # should always be real, since cov is pos-def
+        means_pred_p = means_pred[p]
+        for c, mean_pred_p_c in enumerate(means_pred_p):
+            cov_pred_p_c = covs_pred[p][c]
+            cov_pred_p_c_eval = torch.max(torch.real(torch.linalg.eigvals(cov_pred_p_c))) # should always be real, since cov is pos-def
             for q in range(p + 1, len(means_pred)):
-                means_q = means_pred[q]
-                for k, mean_k in enumerate(means_q):
-                    cov_k = covs_pred[q][k]
-                    cov_k_eval = torch.max(torch.real(torch.linalg.eigvals(cov_k)))
+                means_pred_q = means_pred[q]
+                for k, mean_k in enumerate(means_pred_q):
+                    cov_pred_q_k = covs_pred[q][k]
+                    cov_pred_q_k_eval = torch.max(torch.real(torch.linalg.eigvals(cov_pred_q_k)))
 
-                    pred_min_dist = torch.sqrt(csep * torch.max(cov_c_eval, cov_k_eval)) * len(means_pred)
+                    # pred_min_dist = torch.sqrt(csep * torch.max(cov_c_eval, cov_k_eval)) * len(means_pred) # NOTE
+                    pred_min_dist = torch.sqrt(csep * torch.max(cov_pred_p_c_eval, cov_pred_q_k_eval)) * len(mean_pred_p_c)
                     # pred_min_dist = csep * torch.sqrt(torch.max(cov_c_eval, cov_k_eval) * len(means_pred))
+                    
                     # m = np.min((pred_min_dist.detach().cpu().numpy(), max(min_dists[p], min_dists[q])))
                     m = np.max((pred_min_dist.detach().cpu().numpy(), max(min_dists[p], min_dists[q]))) # NOTE
                     
                     if m < 1e-06:
                         continue
 
-                    dist = torch.norm(mean_c - mean_k, 2)
+                    dist = torch.norm(mean_pred_p_c - mean_k, 2)
                     if (dist - m) + 1e-06 < 0:
                         # total_loss = total_loss + (1 - (dist/m))
                         # total_loss = total_loss + torch.float_power(1 - (dist/m), 1/2)

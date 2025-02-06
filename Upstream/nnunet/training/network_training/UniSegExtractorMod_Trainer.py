@@ -114,12 +114,12 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
             self.task = { "pros":0, }
             self.task_class = {0: 2}
             self.task_id_class_lst_mapping = {0: [0, 1]}
-        self.class_lst_task_id_mapping = {}
-        self.class_lst_to_std_mapping = {}
-        for task_id, cls_lst in self.task_id_class_lst_mapping.items():
-            for i, cls in enumerate(cls_lst):
-                self.class_lst_task_id_mapping[cls] = task_id
-                self.class_lst_to_std_mapping[cls] = i
+        # self.class_lst_task_id_mapping = {}
+        # self.class_lst_to_std_mapping = {}
+        # for task_id, cls_lst in self.task_id_class_lst_mapping.items():
+        #     for i, cls in enumerate(cls_lst):
+        #         # self.class_lst_task_id_mapping[cls] = task_id
+        #         self.class_lst_to_std_mapping[cls] = i
                 
         print("task_class", self.task_class)
         self.visual_epoch = -1
@@ -146,8 +146,8 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
         self.feature_space_dim = feature_space_dim
         self.gmm_comps = gmm_comps
         self.queue_size = queue_size
-        self.num_components = len(self.class_lst_to_std_mapping.keys()) # NOTE num classes
-        self.num_classes = self.num_components
+        # self.num_components = len(self.class_lst_to_std_mapping.keys()) # NOTE num classes
+        self.num_classes = max([self.task_class[t] for t in range(self.total_task_num)])
         self.update_target_dist = False
         self.return_est_dists = True
         self.loss_type = loss_type
@@ -205,7 +205,13 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
         #                             dropout_op_kwargs,
         #                             net_nonlin, net_nonlin_kwargs, True, False, lambda x: x, InitWeights_He(1e-2),
         #                             self.net_num_pool_op_kernel_sizes, self.net_conv_kernel_sizes, False, True, True)
-        uniseg_args = (self.patch_size, 10, [1, 2, 4], self.base_num_features, self.num_components,
+        # uniseg_args = (self.patch_size, 10, [1, 2, 4], self.base_num_features, self.num_components,
+        #                             len(self.net_num_pool_op_kernel_sizes),
+        #                             self.conv_per_stage, 2, conv_op, norm_op, norm_op_kwargs, dropout_op,
+        #                             dropout_op_kwargs,
+        #                             net_nonlin, net_nonlin_kwargs, True, False, lambda x: x, InitWeights_He(1e-2),
+        #                             self.net_num_pool_op_kernel_sizes, self.net_conv_kernel_sizes, False, True, True)
+        uniseg_args = (self.patch_size, self.total_task_num, [1, 2, 4], self.base_num_features, self.num_classes,
                                     len(self.net_num_pool_op_kernel_sizes),
                                     self.conv_per_stage, 2, conv_op, norm_op, norm_op_kwargs, dropout_op,
                                     dropout_op_kwargs,
@@ -217,8 +223,9 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
         # num_components = len(self.class_lst_to_std_mapping.keys())
         self.network = TAPFeatureExtractor_DP(self.feature_space_dim, 
                                             self.gmm_comps,
-                                            self.num_components,  
-                                            copy.deepcopy(self.class_lst_to_std_mapping), 
+                                            self.num_classes,  
+                                            # copy.deepcopy(self.class_lst_to_std_mapping), 
+                                            copy.deepcopy(self.task_class), 
                                             copy.deepcopy(self.task_id_class_lst_mapping),
                                             *uniseg_args, 
                                             with_wandb=self.with_wandb,
@@ -434,7 +441,8 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
             # self.input_vars = torch.tensor(vars).to(dtype=torch.float16)
 
             print(self.total_task_num)
-            tasks_vars = [vars for _ in range(self.total_task_num)]
+            # tasks_vars = [vars for _ in range(self.total_task_num)]
+            tasks_vars = [[1/30] * self.task_class[i] for i in range(self.total_task_num)]
             tasks_cseps = [csep for _ in range(self.total_task_num)]
 
             self.tasks_mus, self.tasks_sigs, self.tasks_weights, self.tasks_min_dists, self.tasks_min_dist = self.init_all_distributions(tasks_vars, tasks_cseps, domain=domain, **{"center_method": "optim"})
@@ -497,7 +505,8 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
 
         self.TAP_avg_losses_dict = {tidx: [] for tidx in range(self.total_task_num)}
         # rho1 = KL, rho2 = domain pen.
-        self.rho1, self.rho2 = 0.1, 0.01 # exp1
+        # self.rho1, self.rho2 = 0.1, 0.01 # exp1
+        self.rho1, self.rho2 = 0.1, 0.1 # exp1 # High KL divergence loss
         # self.rho1, self.rho2 = 0.7, 0.0005
         if self.with_wandb:
             wandb.log({'rho1': self.rho1, 'rho2': self.rho2})
@@ -880,18 +889,25 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
                 keep_covs = new_covs[c*self.max_gmm_comps:c*self.max_gmm_comps + optimal_n]
                 keep_mus = torch.vstack(keep_mus).reshape(optimal_n, self.feature_space_dim)
                 keep_covs = torch.stack([torch.diag(d) for d in keep_covs])
-                # reconstructed_keep_covs = []
-                # for i, d in enumerate(keep_covs):
-                #     # d is a vector of dim == feature_dim_size containing eigenvalues
-                #     _, V = torch.linalg.eigh(self.tasks_sigs[task_idx][c][i])
-                #     new_cov = V @ torch.diag(d) @ V.T#torch.linalg.inv(V)
-                #     new_cov = torch.clamp(new_cov, min=1e-4)
-                #     new_cov = tap_momentum * self.tasks_sigs[task_idx][c][i] + (1 - tap_momentum) * new_cov
-                #     # print(f"V shape: {V.shape}")
-                #     # print(f"new cov shape: {new_cov.shape}")
-                #     # print(f"shape otherwise cov shape: {torch.diag(d).shape}")
-                #     reconstructed_keep_covs.append(new_cov)
-                # keep_covs = torch.stack(reconstructed_keep_covs)
+                reconstructed_keep_covs = []
+                for i, d in enumerate(keep_covs):
+                    # d is a vector of dim == feature_dim_size containing eigenvalues
+                    # ensure that d is not small
+                    _, V = torch.linalg.eigh(self.tasks_sigs[task_idx][c][i])
+                    new_cov = V @ torch.diag(d) @ V.T#torch.linalg.inv(V)
+                    new_cov = torch.clamp(new_cov, min=1e-4)
+                    new_cov = tap_momentum * self.tasks_sigs[task_idx][c][i] + (1 - tap_momentum) * new_cov
+                    # ensure that it is symmetric
+                    upper_tri = torch.triu(new_cov)
+                    new_cov = upper_tri + upper_tri.T - torch.diag(torch.diag(new_cov))
+                    # print(f"V shape: {V.shape}")
+                    # print(f"new cov shape: {new_cov.shape}")
+                    # print(f"shape otherwise cov shape: {torch.diag(d).shape}")
+                    print(f"New cov evals: {torch.real(torch.linalg.eigvals(new_cov))} | dets: {torch.linalg.det(new_cov)}")
+                    if any(new_eval < 1e-3 for new_eval in torch.real(torch.linalg.eigvals(new_cov))):
+                        new_cov = keep_covs[i]
+                    reconstructed_keep_covs.append(new_cov)
+                keep_covs = torch.stack(reconstructed_keep_covs)
                 # keep_covs = torch.stack(keep_covs)
 
                 pruned_mus.append(keep_mus)
@@ -1575,8 +1591,8 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
         return centers
 
     def init_optim_gmm_centers(self, centers, dim, ms, c, return_weights=False):
-        K = self.gmm_comps
-        N = len(centers)
+        K = self.gmm_comps # num components per class distribution
+        N = len(centers) # num class distributions
         new_csep = 2
         # new_csep = 1.5
         # s = new_csep / 10
@@ -1626,9 +1642,12 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
         new_min_dist = np.min(new_min_dists)
         # new_csep = 2
         new_csep = self.csep
-        for i in range(len(all_comp_covs_torch)):
+        # for i in range(len(all_comp_covs_torch)):
+        for i in range(N):
             for k in range(K):
                 comp_cov = np.square((new_min_dist - 1e-04) / new_csep) * (1 / dim) * torch.eye(dim) + (1e-05*torch.eye(dim))
+                if i == 0:
+                    comp_cov = comp_cov * 0.75
                 all_comp_covs_torch[i][k] = comp_cov
             
         all_comp_centers_torch = torch.stack(all_comp_centers_torch)
@@ -1683,7 +1702,8 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
 
     def init_uniform_mixture_weights(self):
         weights = []
-        for _ in range(self.num_components):
+        # for _ in range(self.num_components):
+        for _ in range(self.num_classes):
             weights.append(torch.ones(self.gmm_comps)/self.gmm_comps)
 
         return weights
@@ -1712,6 +1732,15 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
 
             centers, min_dist, max_var = self.optimal_sep(num_classes, self.feature_space_dim)
             min_dists = [min_dist for _ in range(len(min_dists))]
+            print('len min dists prior to adjustment', len(min_dists))
+            min_dists = []
+            # for i, min_dist, in enumerate(min_dists):
+            for i in range(num_classes):
+                if i == 0:
+                    min_dists.append(min_dist * 1.5) # NOTE 
+                else:
+                    min_dists.append(min_dist * 0.75)
+            print('len min dists post adjustment', len(min_dists))
 
         # mus, sigs = self.init_gmm_centers(centers, self.feature_space_dim, min_dists, csep)
         mus, sigs  = self.init_optim_gmm_centers(centers, self.feature_space_dim, min_dists, csep)
