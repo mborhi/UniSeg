@@ -54,20 +54,20 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
         super().__init__(plans_file, fold, output_folder, dataset_directory, batch_dice, stage, unpack_data,
                          deterministic, fp16)
         self.max_num_epochs = max_num_epochs
-        self.task = {"live":0, "kidn":1, "hepa":2, "panc":3, "colo":4, "lung":5, "sple":6, "sub-":7, "pros":8, "BraT":9}
-        self.task_class = {0: 3, 1: 3, 2: 3, 3: 3, 4: 2, 5: 2, 6: 2, 7: 2, 8: 2, 9: 4}
-        self.task_id_class_lst_mapping = {
-            0: [0, 1, 2], 
-            1: [0, 1, 2], 
-            2: [0, 1, 2],
-            3: [0, 1, 2],
-            4: [0, 1], 
-            5: [0, 1],
-            6: [0, 1],
-            7: [0, 1],
-            8: [0, 1],
-            9: [0, 1, 2, 3], 
-        }
+        # self.task = {"live":0, "kidn":1, "hepa":2, "panc":3, "colo":4, "lung":5, "sple":6, "sub-":7, "pros":8, "BraT":9}
+        # self.task_class = {0: 3, 1: 3, 2: 3, 3: 3, 4: 2, 5: 2, 6: 2, 7: 2, 8: 2, 9: 4}
+        # self.task_id_class_lst_mapping = {
+        #     0: [0, 1, 2], 
+        #     1: [0, 1, 2], 
+        #     2: [0, 1, 2],
+        #     3: [0, 1, 2],
+        #     4: [0, 1], 
+        #     5: [0, 1],
+        #     6: [0, 1],
+        #     7: [0, 1],
+        #     8: [0, 1],
+        #     9: [0, 1, 2, 3], 
+        # }
         # self.task = {"live":0, "kidn":1, "hepa":2, "panc":3, "colo":4, "lung":5, "sple":6, "sub-":7, "pros":8}
         # self.task_class = {0: 3, 1: 3, 2: 3, 3: 3, 4: 2, 5: 2, 6: 2, 7: 2, 8: 2}
         # self.task_id_class_lst_mapping = {
@@ -97,6 +97,13 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
         #     2: [0, 1], 
         #     3: [0, 1, 2], 
         # }
+        self.task = {"pros":0, "sple":1, "live":2}
+        self.task_class = {0: 2, 1: 2, 2: 3}
+        self.task_id_class_lst_mapping = {
+            0: [0, 1], 
+            1: [0, 1], 
+            2: [0, 1, 2], 
+        }
         if ood_detection_mode:
             self.task = {"BraT":0}
             self.task_class = {0: 4}
@@ -120,8 +127,8 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
         # self.total_task_num = 10
         self.batch_size = batch_size
         # self.num_batches_per_epoch = (50 * self.total_task_num) #// (num_gpus * (self.batch_size // 2)) #int((50 // num_gpus) * self.total_task_num)
-        self.num_batches_per_epoch = (3 * self.total_task_num) #// (num_gpus * (self.batch_size // 2)) #int((50 // num_gpus) * self.total_task_num)
-        # self.num_batches_per_epoch = int((50 // self.batch_size) * self.total_task_num)
+        # self.num_batches_per_epoch = (3 * self.total_task_num) #// (num_gpus * (self.batch_size // 2)) #int((50 // num_gpus) * self.total_task_num)
+        self.num_batches_per_epoch = int((50 // (self.batch_size // 2)) * self.total_task_num)
         # self.num_batches_per_epoch = 50 #// (num_gpus * self.batch_size) #int((50 // num_gpus) * self.total_task_num)
         # self.num_val_batches_per_epoch = self.num_batches_per_epoch // self.total_task_num#// 5
         print("num batches per epoch:", self.num_batches_per_epoch)
@@ -488,7 +495,12 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
         else:
             self.print_to_log_file('self.was_initialized is True, not running self.initialize again')
 
-        self.TAP_avg_losses_dict = {[] for _ in range(self.total_task_num)}
+        self.TAP_avg_losses_dict = {tidx: [] for tidx in range(self.total_task_num)}
+        # rho1 = KL, rho2 = domain pen.
+        self.rho1, self.rho2 = 0.1, 0.01 # exp1
+        # self.rho1, self.rho2 = 0.7, 0.0005
+        if self.with_wandb:
+            wandb.log({'rho1': self.rho1, 'rho2': self.rho2})
 
         self.was_initialized = True
 
@@ -522,6 +534,7 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
             task_id = to_cuda(task_id, gpu_id=None)
             data = to_cuda(data, gpu_id=None)
             target = to_cuda(target, gpu_id=None) 
+            self.tasks_sigs = [[tensor.cuda() for tensor in row] for row in self.tasks_sigs]
 
         #     # check if device of mus/sigs
         #     if not self.mus[0][0].is_cuda:
@@ -667,6 +680,7 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
             # self.allocate_targets([10 for _ in range(self.num_components)], tidx)
             self.allocate_targets([self.max_gmm_comps for _ in range(self.task_class[tidx])], tidx)
 
+        self.save_avg_TAP_losses()
         self.n_iter_not_improved = 0
 
         self.recalced = True
@@ -901,11 +915,12 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
             # l = self.main_loss.get_non_uniform_dynamic_sep_loss(pruned_mus, pruned_covs, self.min_dists, csep=self.csep) + \
             #         1.5 * component_wise_kl_div(em_mus, em_covs, pruned_mus, pruned_covs) + \
             #         0.5 * dm_pen
-            rho2 = 0.001
-            rho1 = 0.5
+            # NOTE rho2 = 0.001, rho1 = 0.5 is the 'default'
+            # rho2 = 0.01
+            # rho1 = 0.1
             l = get_non_uniform_dynamic_sep_loss(pruned_mus, pruned_covs, self.tasks_min_dists[task_idx], csep=self.csep) + \
-                    rho2 * tap_kl + \
-                    rho1 * dm_pen
+                    self.rho2 * tap_kl + \
+                    self.rho1 * dm_pen
             
             self.print_to_log_file(f"tap loss: {l}")
             if self.with_wandb:

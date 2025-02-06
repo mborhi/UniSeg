@@ -511,7 +511,7 @@ class NetworkTrainer(object):
                     self.tasks_mus[t][class_idx] = self.tasks_mus[t][class_idx].cuda()
                     self.tasks_sigs[t][class_idx] = self.tasks_sigs[t][class_idx].cuda()
                     self.tasks_weights[t][class_idx] = self.tasks_weights[t][class_idx].cuda()
-                self.network.set_feature_space_distribution_parameters(self.tasks_mus[t], self.tasks_sigs[t].cuda(), self.tasks_weights[t], task=t)
+                self.network.set_feature_space_distribution_parameters(self.tasks_mus[t], self.tasks_sigs[t], self.tasks_weights[t], task=t)
                 # self.network.set_feature_space_distribution_parameters(self.tasks_mus[t], self.tasks_sigs[t], self.tasks_weights[t], task=t)
                 self.network.construct_task_feature_space_gmm_implicit(t)
             for t in range(self.total_task_num):
@@ -661,7 +661,8 @@ class NetworkTrainer(object):
 
             self.all_tr_losses.append(np.mean(train_losses_epoch))
             self.print_to_log_file("train loss : %.4f" % self.all_tr_losses[-1])
-            if wandb.run is not None: wandb.log({"epoch_avg_loss": self.all_tr_losses[-1]})
+            if wandb.run is not None: 
+                wandb.log({"epoch_avg_loss": self.all_tr_losses[-1]})
             
             # NOTE Add GMM claculations here
             # NOTE this may be redundent all together
@@ -893,16 +894,17 @@ class NetworkTrainer(object):
         # save the target distributions
         # take from model
         gmm_save_dict = {}
-        for tidx in range(self.num_tasks):
-            task_mus, task_covs, task_weights = self.model.tasks_mus[tidx], self.model.tasks_covs[tidx], self.model.tasks_weights[tidx]
+        for tidx in range(self.total_task_num):
+            task_mus, task_covs, task_weights = self.tasks_mus[tidx], self.tasks_sigs[tidx], self.tasks_weights[tidx]
+            # print(task_mus, task_covs, task_weights)
 
             cls_save_dict = {}
             for cidx in range(self.task_class[tidx]):
                 cls_mu, cls_cov, cls_weight = task_mus[cidx], task_covs[cidx], task_weights[cidx]
                 cls_save_dict[cidx] = {
                     "mean": cls_mu.detach().cpu().numpy(), 
-                    "cov": cls_cov.deatch().cpu().numpy(), 
-                    "weight": cls_weight.deatch().cpu().numpy()
+                    "cov": cls_cov.detach().cpu().numpy(), 
+                    "weight": cls_weight.detach().cpu().numpy()
                 }
 
             gmm_save_dict[tidx] = cls_save_dict
