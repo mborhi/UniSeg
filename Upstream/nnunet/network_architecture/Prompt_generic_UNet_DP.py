@@ -1455,8 +1455,8 @@ class TAPFeatureExtractor_DP(UniSeg_model):
     def determine_ood(self, predicted_probabilities, task_id):
         task_id = int(task_id[0].item())
         if self.thresholds[task_id] is None:
-            # self.calculate_task_ood_threshold(task_id)
-            self.thresholds[task_id] = 0.333
+            self.calculate_task_ood_threshold(task_id)
+            # self.thresholds[task_id] = 0.333
         ood_mask = predicted_probabilities < self.thresholds[task_id]
         segmentation_prediction = predicted_probabilities.argmax(0)
         segmentation_prediction[ood_mask.all(0)] = -1
@@ -1587,6 +1587,8 @@ class TAPFeatureExtractor_DP(UniSeg_model):
         if self.ood_detection_mode:
             # predicted_segmentation, anomaly_probabilities = self.determine_ood(aggregated_results, task_id)
             predicted_segmentation = aggregated_results.argmax(0)
+            print('aggregated results shape', aggregated_results.shape)
+            # predicted_segmentation = aggregated_results.argmax(2)
             anomaly_probabilities = aggregated_results
             # print(f'predicted seg :{np.unique(predicted_segmentation)} | {np.min(predicted_segmentation)} | {np.max(predicted_segmentation)}')
             # print(f'aggr res :{np.unique(aggregated_results)} | {np.min(aggregated_results)} | {np.max(aggregated_results)}')
@@ -1595,6 +1597,8 @@ class TAPFeatureExtractor_DP(UniSeg_model):
 
         if regions_class_order is None:
             predicted_segmentation = aggregated_results.argmax(0)
+            print('aggregated results shape, pred seg shape', aggregated_results.shape, predicted_segmentation.shape)
+            # predicted_segmentation = aggregated_results.argmax(2)
         else:
             if all_in_gpu:
                 class_probabilities_here = aggregated_results.detach().cpu().numpy()
@@ -1614,3 +1618,4 @@ class TAPFeatureExtractor_DP(UniSeg_model):
 
         if verbose: print("prediction done")
         return predicted_segmentation, aggregated_results
+    

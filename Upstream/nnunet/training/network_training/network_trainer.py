@@ -791,7 +791,7 @@ class NetworkTrainer(object):
                 self.save_checkpoint(join(self.output_folder, "model_ep_%03.0d.model" % (self.epoch + 1)))
             self.save_checkpoint(join(self.output_folder, "model_latest.model"))
             self.print_to_log_file("done")
-        elif self.all_val_eval_metrics[-1] >= 0.79:
+        elif self.all_val_eval_metrics[-1] >= 0.85:
             self.print_to_log_file(f"saving checkpoint with val score {self.all_val_eval_metrics[-1]} file...")
             self.save_checkpoint(join(self.output_folder, f"model_high_val_ep_{self.epoch+1}.model"))
             self.print_to_log_file("done")

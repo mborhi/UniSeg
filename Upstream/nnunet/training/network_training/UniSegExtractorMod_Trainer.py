@@ -552,7 +552,7 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
         #             self.mus[t] = self.mus[t].cuda()
         #             self.sigs[t] = self.sigs[t].cuda()
         #             self.weights[t] = self.weights[t].cuda()
-            
+
         self.log_img_wandb = False
         print(f"recalc: {self.recalc_dist}")
         self.optimizer.zero_grad()
@@ -662,6 +662,7 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
         if run_online_evaluation:
             # self.run_online_evaluation(output, target)
             # self.run_online_evaluation(output_probs_softmax, target)
+            print('online evaluation output probs shape', output_probs[0].shape)
             self.run_online_evaluation(output_probs, target)
 
         del target
@@ -744,7 +745,8 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
             # task_class_val_queue = torch.vstack(task_class_val_queue).detach().cpu().numpy() if len(task_class_val_queue) > 10 else task_class_queue
             # self.network.gaussian_mixtures[t].fit(task_queue)
             # momentum = 0.1 * (1 - (self.epoch / self.max_num_epochs))
-            momentum = 0.1 #* (1 - (self.epoch / self.max_num_epochs))
+            # momentum = 0.1 #* (1 - (self.epoch / self.max_num_epochs))
+            momentum = 0.05 #* (1 - (self.epoch / self.max_num_epochs))
             # momentum = 0.4
             # mu_hat_t = torch.from_numpy(self.network.gaussian_mixtures[t].means_).cuda()
             # sig_hat_t = torch.from_numpy(self.network.gaussian_mixtures[t].covariances_).cuda()
@@ -861,7 +863,8 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
         input_tc_inds = [list(range(self.max_gmm_comps)) for t in range(self.task_class[task_idx])]
 
         # self.tap_optimizer.zero_grad()
-        tap_momentum = 0.4
+        # tap_momentum = 0.4
+        tap_momentum = 0.9
         # tap_momentum = 1 - np.power(self.epoch / self.max_num_epochs, 2)
         # tap_momentum = min(0.3 + (self.epoch / self.max_num_epochs), 0.45)
         self.tap_tasks_optimizer[task_idx].zero_grad()
@@ -903,7 +906,7 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
                     # print(f"V shape: {V.shape}")
                     # print(f"new cov shape: {new_cov.shape}")
                     # print(f"shape otherwise cov shape: {torch.diag(d).shape}")
-                    print(f"New cov evals: {torch.real(torch.linalg.eigvals(new_cov))} | dets: {torch.linalg.det(new_cov)}")
+                    # print(f"New cov evals: {torch.real(torch.linalg.eigvals(new_cov))} | dets: {torch.linalg.det(new_cov)}")
                     if any(new_eval < 1e-3 for new_eval in torch.real(torch.linalg.eigvals(new_cov))):
                         new_cov = keep_covs[i]
                     reconstructed_keep_covs.append(new_cov)
