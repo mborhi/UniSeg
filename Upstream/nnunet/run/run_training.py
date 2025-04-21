@@ -17,7 +17,7 @@ import argparse
 from batchgenerators.utilities.file_and_folder_operations import *
 from nnunet.run.default_configuration import get_default_configuration
 from nnunet.paths import default_plans_identifier
-from nnunet.run.load_pretrained_weights import load_pretrained_weights
+from nnunet.run.load_pretrained_weights import load_pretrained_weights, load_pretrained_weights_lenient
 from nnunet.training.cascade_stuff.predict_next_stage import predict_next_stage
 from nnunet.training.network_training.nnUNetTrainer import nnUNetTrainer
 from nnunet.training.network_training.nnUNetTrainerCascadeFullRes import nnUNetTrainerCascadeFullRes
@@ -231,7 +231,6 @@ def main():
     trainer.initialize(not validation_only)
     # init_means, init_vars = trainer.network.dynamic_dist.get_mean_var()
     
-
     if find_lr:
         trainer.find_lr()
     else:
@@ -249,7 +248,11 @@ def main():
                     trainer.network.set_feature_space_distribution_parameters(trainer.tasks_mus[t], trainer.tasks_sigs[t], trainer.tasks_weights[t], task=t)
             elif (not args.continue_training) and (args.pretrained_weights is not None):
                 # we start a new training. If pretrained_weights are set, use them
-                load_pretrained_weights(trainer.network, args.pretrained_weights)
+                # load_pretrained_weights(trainer.network, args.pretrained_weights)
+                # Update model with pre-trained weights
+                if (args.pretrained_weights is not None):
+                    load_pretrained_weights_lenient(trainer.network, args.pretrained_weights)
+                    trainer.refill_queue_and_train_gmm()
             else:
                 # new training without pretrained weights, do nothing
                 pass

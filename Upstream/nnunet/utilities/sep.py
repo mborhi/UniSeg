@@ -277,8 +277,10 @@ def pen_domain(cls_means, domain=[-1, 1]):
 
     return total
         
+def penalize_out_of_domain(means, domain=None):
+    return torch.square(torch.norm(means) - 1)
 
-def penalize_out_of_domain(means, domain=[-1, 1]):
+def penalize_out_of_domain_(means, domain=[-1, 1]):
 
     lower = means < domain[0]
     if torch.sum(lower) > 0:

@@ -32,12 +32,37 @@ class TAP(nn.Module):
 
         hidden_dim = 1000
 
+        # self.trunks = nn.ModuleList([
+        #     self.create_trunk(feature_space_dim) for _ in range(num_components)
+        # ])
+        self.trunk = self.create_trunk(feature_space_dim)
+
         self.mu_mods = nn.ModuleList([
             # self.create_mod(feature_space_dim, gmm_comps) for _ in range(num_components)
             # self.create_mod_(feature_space_dim, gmm_comps) for _ in range(num_components)
-            self.create_mod_list(feature_space_dim, gmm_comps) for _ in range(num_components)
+            # self.create_mod_list(feature_space_dim, gmm_comps, self.trunks[t]) for t in range(num_components)
+            self.create_mod_list(feature_space_dim, gmm_comps, self.trunk) for t in range(num_components)
         ])
 
+        # self.cov_mods = [
+        #     (
+        #         nn.ModuleList([nn.Sequential(
+        #             nn.Linear(256, feature_space_dim),
+        #             nn.Softplus()
+        #         )]),
+        #         nn.ModuleList([nn.Linear(256, feature_space_dim * feature_space_dim)])
+        #     )
+        #     for t in range(num_components)
+        # ]
+        self.cov_mods_eval_heads = nn.ModuleList([
+            nn.ModuleList([nn.Sequential(
+                    nn.Linear(256, feature_space_dim),
+                    nn.Softplus()
+            )]) for t in range(num_components)
+        ])
+        self.cov_mods_evec_heads = nn.ModuleList([
+            nn.ModuleList([nn.Linear(256, feature_space_dim * feature_space_dim)]) for t in range(num_components)
+        ])
         # NOTE changed to scalar out
         self.sig_mods = nn.ModuleList([
             # self.create_mod(feature_space_dim, gmm_comps) for _ in range(num_components)
@@ -130,31 +155,100 @@ class TAP(nn.Module):
         ])
 
         return mod
-    
-    def create_mod_list(self, feature_space_dim, gmm_comps, scalar_out=False):
+
+    def create_trunk(self, feature_space_dim):
+        shared_layers = nn.Sequential(
+            nn.Linear(2 * feature_space_dim + 2, 512),
+            nn.PReLU(),
+            nn.Dropout(0.1),
+            nn.Linear(512, 256),
+            nn.PReLU(),
+        )
+
+        return shared_layers
+
+    def orthonormalize(self, vectors):
+        q, _ = torch.linalg.qr(vectors)
+        return q
+
+    def forward_cov_shared(self, shared_out, d):
+        eigenvector_head = nn.Linear(256, d * d)   # Predicting a square matrix
+        eigenvalue_head = nn.Sequential(
+            nn.Linear(256, d),
+            nn.Softplus()                          # Ensures positive eigenvalues
+        )
+        V = eigenvector_head(shared_out).view(-1, d, d)
+        V = self.orthonormalize(V)  # you'll need to apply Gram-Schmidt or QR
+
+        λ = eigenvalue_head(shared_out).view(-1, d)
+        cov = V @ torch.diag_embed(λ) @ V.transpose(-1, -2)
+
+        return cov
+
+    def forward_cov(self, shared_out, evec_head, eval_head):
+        # V = evec_head(shared_out).view(-1, self.feature_space_dim, self.feature_space_dim)
+        V = self.f(shared_out, evec_head).view(-1, self.feature_space_dim, self.feature_space_dim)
+        V = self.orthonormalize(V)  # you'll need to apply Gram-Schmidt or QR
+
+        # λ = eval_head(shared_out).view(-1, self.feature_space_dim)
+        λ = self.f(shared_out, eval_head).view(-1, self.feature_space_dim)
+        cov = V @ torch.diag_embed(λ) @ V.transpose(-1, -2)
+
+        return cov
+        
+    def create_mod_list(self, feature_space_dim, gmm_comps, scalar_out=False, shared_trunk=None):
         # final_out_size = feature_space_dim if not scalar_out else 1
         final_out_size = feature_space_dim if not scalar_out else feature_space_dim
-        final_act = nn.Tanh() if not scalar_out else nn.ReLU()
-        mod = nn.ModuleList([
-            nn.ModuleList([
-                # eig(\Sigma_tc) + \mu_tc + t + c
-                nn.Linear(feature_space_dim + feature_space_dim + 1 + 1, 256), 
-                # nn.Linear(feature_space_dim + feature_space_dim + gmm_comps + feature_space_dim, 256), 
-                # nn.Linear(feature_space_dim + feature_space_dim, 256), 
-                # nn.Linear((feature_space_dim * (num_components*10)) + (1 * (num_components*10)) + 1, 256), 
-                nn.PReLU(), 
-                nn.Linear(256, 128),
-                nn.PReLU(), 
-                nn.Linear(128, final_out_size),
-                # nn.Linear(128, feature_space_dim),
-                # nn.Tanh(), 
-                final_act,
+        # final_act = nn.Tanh() if not scalar_out else nn.ReLU()
+        final_act = nn.Tanh() if not scalar_out else nn.Identity()
+
+        if shared_trunk is not None:
+            mod = nn.ModuleList([
+                list(shared_trunk) +
+                nn.ModuleList([
+                    nn.Linear(256, 256),
+                    nn.PReLU(), 
+                    nn.Dropout(0.1),
+                    nn.Linear(256, 128),
+                    nn.PReLU(), 
+                    nn.Dropout(0.1),
+                    nn.Linear(128, final_out_size),
+                    nn.Identity()
+                ])
+                for _ in range(gmm_comps)
             ])
-            for t in range(gmm_comps)
-            # for t in range(1)
-        ])
+        else: 
+            mod = nn.ModuleList([
+                nn.ModuleList([
+                    # eig(\Sigma_tc) + \mu_tc + t + c
+                    nn.Linear(feature_space_dim + feature_space_dim + 1 + 1, 512), 
+                    # nn.Linear(feature_space_dim + feature_space_dim + gmm_comps + feature_space_dim, 256), 
+                    # nn.Linear(feature_space_dim + feature_space_dim, 256), 
+                    # nn.Linear((feature_space_dim * (num_components*10)) + (1 * (num_components*10)) + 1, 256), 
+                    nn.PReLU(), 
+                    nn.Dropout(0.1),
+                    nn.Linear(512, 256),
+                    nn.PReLU(),
+                    nn.Dropout(0.1), 
+                    nn.Linear(256, 256),
+                    nn.PReLU(), 
+                    nn.Dropout(0.1),
+                    nn.Linear(256, 128),
+                    nn.PReLU(), 
+                    nn.Dropout(0.1),
+                    nn.Linear(128, final_out_size),
+                    # nn.Linear(128, feature_space_dim),
+                    # nn.Tanh(), 
+                    final_act,
+                ])
+                for t in range(gmm_comps)
+                # for t in range(1)
+            ])
 
         return mod
+
+    def normalize_to_unit_sphere(self, z, eps=1e-8):
+        return z / (z.norm(dim=-1, keepdim=True) + eps)
 
     def f(self, x, modlist):
         # https://discuss.pytorch.org/t/runtimeerror-one-of-the-variables-needed-for-gradient-computation-has-been-modified-by-an-inplace-operation-torch-floattensor-64-1-which-is-output-0-of-asstridedbackward0-is-at-version-3-expected-version-2-instead-hint-the-backtrace-further-a/171826/7
@@ -244,11 +338,20 @@ class TAP(nn.Module):
                 # input = torch.cat((input_means, input_vars, one_hot_vec_cls_idx, one_hot_vec_comp_idx), -1).to(dtype=torch.float32).detach().clone()
                 # input = torch.cat((input_means, input_vars), -1).to(dtype=torch.float32).detach().clone()
                 # mu_hat_t_c = torch.mean(self.mu_mods[t][c](input), dim=0) # averaged along batch
-                mu_hat_t_c = torch.mean(self.f(input, self.mu_mods[t][c]), dim=0) # averaged along batch
+                mu_hat_t_c = self.normalize_to_unit_sphere(self.f(input, self.mu_mods[t][c]))
+                mu_hat_t_c = torch.mean(mu_hat_t_c, dim=0) # averaged along batch
                 # sigma_hat_t_c = torch.mean(self.sig_mods[t][c](input), dim=0) # averaged along batch
-                sigma_hat_t_c = torch.mean(self.f(input, self.sig_mods[t][c]), dim=0) # averaged along batch
+                # sigma_hat_t_c = torch.mean(self.f(input, self.sig_mods[t][c]), dim=0) # averaged along batch
                 # sigma_hat_t_c = self.sig_mods[t][c](input)
                 # mu_hat_t_c = torch.mean(self.task_mu_modules[0](input), dim=0) # averaged along batch
+
+
+                shared_sigma_out = self.f(input, self.trunk)
+                evec_head, eval_head = self.cov_mods_evec_heads[t], self.cov_mods_eval_heads[t]
+                sigma_hat_t_c = self.forward_cov(shared_sigma_out, evec_head, eval_head)
+
+                mu_hats.append(mu_hat_t_c)
+                sigma_hats.append(sigma_hat_t_c)
 
                 # if with_update:
 
@@ -256,14 +359,14 @@ class TAP(nn.Module):
                 # # updated_var_t_c = (1 - self.momentum) * vars[self.gmm_comps * t + c] + (self.momentum * sigma_hat_t_c) + 0.0001 # for numerical stability
                 # updated_var_t_c = (1 - self.momentum) * vars[t][c] + (self.momentum * sigma_hat_t_c) + 0.0001 # for numerical stability
 
-                updated_mean_t_c = means[t][c] + mu_hat_t_c
-                updated_var_t_c = sigma_hat_t_c * vars[t][c]
+                # updated_mean_t_c = means[t][c] + mu_hat_t_c
+                # updated_var_t_c = sigma_hat_t_c * vars[t][c]
                 # NOTE
-                if tap_momentum is not None:
-                    updated_mean_t_c = (1 - tap_momentum) * means[t][c] + (tap_momentum * updated_mean_t_c)
-                    updated_var_t_c = (1 - tap_momentum) * vars[t][c] + (tap_momentum * updated_var_t_c) #+ 1e-04
-                mu_hats.append(updated_mean_t_c) 
-                sigma_hats.append(updated_var_t_c)
+                # if tap_momentum is not None:
+                #     updated_mean_t_c = (1 - tap_momentum) * means[t][c] + (tap_momentum * updated_mean_t_c)
+                #     updated_var_t_c = (1 - tap_momentum) * vars[t][c] + (tap_momentum * updated_var_t_c) #+ 1e-04
+                # mu_hats.append(updated_mean_t_c) 
+                # sigma_hats.append(updated_var_t_c)
 
                 # NOTE 
                 # updated_var_t_c = vars[t][c] + sigma_hat_t_c + 1e-04

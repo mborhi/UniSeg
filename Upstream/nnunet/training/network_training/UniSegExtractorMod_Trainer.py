@@ -54,20 +54,20 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
         super().__init__(plans_file, fold, output_folder, dataset_directory, batch_dice, stage, unpack_data,
                          deterministic, fp16)
         self.max_num_epochs = max_num_epochs
-        # self.task = {"live":0, "kidn":1, "hepa":2, "panc":3, "colo":4, "lung":5, "sple":6, "sub-":7, "pros":8, "BraT":9}
-        # self.task_class = {0: 3, 1: 3, 2: 3, 3: 3, 4: 2, 5: 2, 6: 2, 7: 2, 8: 2, 9: 4}
-        # self.task_id_class_lst_mapping = {
-        #     0: [0, 1, 2], 
-        #     1: [0, 1, 2], 
-        #     2: [0, 1, 2],
-        #     3: [0, 1, 2],
-        #     4: [0, 1], 
-        #     5: [0, 1],
-        #     6: [0, 1],
-        #     7: [0, 1],
-        #     8: [0, 1],
-        #     9: [0, 1, 2, 3], 
-        # }
+        self.task = {"live":0, "kidn":1, "hepa":2, "panc":3, "colo":4, "lung":5, "sple":6, "sub-":7, "pros":8, "BraT":9}
+        self.task_class = {0: 3, 1: 3, 2: 3, 3: 3, 4: 2, 5: 2, 6: 2, 7: 2, 8: 2, 9: 4}
+        self.task_id_class_lst_mapping = {
+            0: [0, 1, 2], 
+            1: [0, 1, 2], 
+            2: [0, 1, 2],
+            3: [0, 1, 2],
+            4: [0, 1], 
+            5: [0, 1],
+            6: [0, 1],
+            7: [0, 1],
+            8: [0, 1],
+            9: [0, 1, 2, 3], 
+        }
         # self.task = {"live":0, "kidn":1, "hepa":2, "panc":3, "colo":4, "lung":5, "sple":6, "sub-":7, "pros":8}
         # self.task_class = {0: 3, 1: 3, 2: 3, 3: 3, 4: 2, 5: 2, 6: 2, 7: 2, 8: 2}
         # self.task_id_class_lst_mapping = {
@@ -97,13 +97,13 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
         #     2: [0, 1], 
         #     3: [0, 1, 2], 
         # }
-        self.task = {"pros":0, "sple":1, "live":2}
-        self.task_class = {0: 2, 1: 2, 2: 3}
-        self.task_id_class_lst_mapping = {
-            0: [0, 1], 
-            1: [0, 1], 
-            2: [0, 1, 2], 
-        }
+        # self.task = {"pros":0, "sple":1, "live":2}
+        # self.task_class = {0: 2, 1: 2, 2: 3}
+        # self.task_id_class_lst_mapping = {
+        #     0: [0, 1], 
+        #     1: [0, 1], 
+        #     2: [0, 1, 2], 
+        # }
         if ood_detection_mode:
             self.task = {"BraT":0}
             self.task_class = {0: 4}
@@ -211,7 +211,8 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
         #                             dropout_op_kwargs,
         #                             net_nonlin, net_nonlin_kwargs, True, False, lambda x: x, InitWeights_He(1e-2),
         #                             self.net_num_pool_op_kernel_sizes, self.net_conv_kernel_sizes, False, True, True)
-        uniseg_args = (self.patch_size, self.total_task_num, [1, 2, 4], self.base_num_features, self.num_classes,
+        # uniseg_args = (self.patch_size, self.total_task_num, [1, 2, 4], self.base_num_features, self.num_classes,
+        uniseg_args = (self.patch_size, self.total_task_num, [1, 2, 4], self.base_num_features, self.feature_space_dim,
                                     len(self.net_num_pool_op_kernel_sizes),
                                     self.conv_per_stage, 2, conv_op, norm_op, norm_op_kwargs, dropout_op,
                                     dropout_op_kwargs,
@@ -505,8 +506,8 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
 
         self.TAP_avg_losses_dict = {tidx: [] for tidx in range(self.total_task_num)}
         # rho1 = KL, rho2 = domain pen.
-        # self.rho1, self.rho2 = 0.1, 0.01 # exp1
-        self.rho1, self.rho2 = 0.1, 0.1 # exp1 # High KL divergence loss
+        self.rho1, self.rho2 = 0.0, 0.01 # exp1
+        # self.rho1, self.rho2 = 0.1, 0.1 # exp1 # High KL divergence loss
         # self.rho1, self.rho2 = 0.7, 0.0005
         if self.with_wandb:
             wandb.log({'rho1': self.rho1, 'rho2': self.rho2})
@@ -864,7 +865,7 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
 
         # self.tap_optimizer.zero_grad()
         # tap_momentum = 0.4
-        tap_momentum = 0.9
+        tap_momentum = 0.7
         # tap_momentum = 1 - np.power(self.epoch / self.max_num_epochs, 2)
         # tap_momentum = min(0.3 + (self.epoch / self.max_num_epochs), 0.45)
         self.tap_tasks_optimizer[task_idx].zero_grad()
@@ -891,26 +892,28 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
                 keep_mus = new_mus[c*self.max_gmm_comps:c*self.max_gmm_comps + optimal_n]
                 keep_covs = new_covs[c*self.max_gmm_comps:c*self.max_gmm_comps + optimal_n]
                 keep_mus = torch.vstack(keep_mus).reshape(optimal_n, self.feature_space_dim)
-                keep_covs = torch.stack([torch.diag(d) for d in keep_covs])
-                reconstructed_keep_covs = []
-                for i, d in enumerate(keep_covs):
-                    # d is a vector of dim == feature_dim_size containing eigenvalues
-                    # ensure that d is not small
-                    _, V = torch.linalg.eigh(self.tasks_sigs[task_idx][c][i])
-                    new_cov = V @ torch.diag(d) @ V.T#torch.linalg.inv(V)
-                    new_cov = torch.clamp(new_cov, min=1e-4)
-                    new_cov = tap_momentum * self.tasks_sigs[task_idx][c][i] + (1 - tap_momentum) * new_cov
-                    # ensure that it is symmetric
-                    upper_tri = torch.triu(new_cov)
-                    new_cov = upper_tri + upper_tri.T - torch.diag(torch.diag(new_cov))
-                    # print(f"V shape: {V.shape}")
-                    # print(f"new cov shape: {new_cov.shape}")
-                    # print(f"shape otherwise cov shape: {torch.diag(d).shape}")
-                    # print(f"New cov evals: {torch.real(torch.linalg.eigvals(new_cov))} | dets: {torch.linalg.det(new_cov)}")
-                    if any(new_eval < 1e-3 for new_eval in torch.real(torch.linalg.eigvals(new_cov))):
-                        new_cov = keep_covs[i]
-                    reconstructed_keep_covs.append(new_cov)
-                keep_covs = torch.stack(reconstructed_keep_covs)
+                keep_covs = torch.stack(keep_covs)
+                ## NOTE spectral mapping performed in the forward of TAP module
+                # keep_covs = torch.stack([torch.diag(d) for d in keep_covs])
+                # reconstructed_keep_covs = []
+                # for i, d in enumerate(keep_covs):
+                #     # d is a vector of dim == feature_dim_size containing eigenvalues
+                #     # ensure that d is not small
+                #     _, V = torch.linalg.eigh(self.tasks_sigs[task_idx][c][i])
+                #     new_cov = V @ torch.diag(d) @ V.T#torch.linalg.inv(V)
+                #     new_cov = torch.clamp(new_cov, min=1e-4)
+                #     new_cov = tap_momentum * self.tasks_sigs[task_idx][c][i] + (1 - tap_momentum) * new_cov
+                #     # ensure that it is symmetric
+                #     upper_tri = torch.triu(new_cov)
+                #     new_cov = upper_tri + upper_tri.T - torch.diag(torch.diag(new_cov))
+                #     # print(f"V shape: {V.shape}")
+                #     # print(f"new cov shape: {new_cov.shape}")
+                #     # print(f"shape otherwise cov shape: {torch.diag(d).shape}")
+                #     # print(f"New cov evals: {torch.real(torch.linalg.eigvals(new_cov))} | dets: {torch.linalg.det(new_cov)}")
+                #     if any(new_eval < 1e-3 for new_eval in torch.real(torch.linalg.eigvals(new_cov))):
+                #         new_cov = keep_covs[i]
+                #     reconstructed_keep_covs.append(new_cov)
+                # keep_covs = torch.stack(reconstructed_keep_covs)
                 # keep_covs = torch.stack(keep_covs)
 
                 pruned_mus.append(keep_mus)
@@ -1095,6 +1098,8 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
         output_folder = join(self.output_folder, validation_folder_name)
         maybe_mkdir_p(output_folder)
         # this is for debug purposes
+        # step_size = 0.5
+        # use_gaussian = False
         my_input_args = {'do_mirroring': do_mirroring,
                          'use_sliding_window': use_sliding_window,
                          'step_size': step_size,
@@ -1356,7 +1361,7 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
         tr_gen.next()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
-        self.update_iter = 999
+        # self.update_iter = 999
         # for b in range(self.num_batches_per_epoch // 2):
         self.network._deep_supervision, self.network.do_ds = True, True
         self.network.q_update_size = 100
@@ -1366,6 +1371,10 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
                 self.first = True
                 self.run_iteration(tr_gen, False, False)
 
+        self._maybe_init_amp()
+        self.recalc_targets()
+
+        return 
         for task_idx in range(self.total_task_num):
             for class_idx in range(self.task_class[task_idx]):
                 self.print_to_log_file(f"recalc for task {task_idx}, class {class_idx} / {self.task_class[task_idx]}")
@@ -1804,3 +1813,7 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
     def save_avg_TAP_losses(self):
         with open(join(self.output_folder, f"TAP_avg_losses_ep_{self.epoch:03d}.pkl"), 'wb') as f:
             pickle.dump(self.TAP_avg_losses_dict, f)
+
+
+    def load_weights_from_pretrained(self):
+        weights_path = "/data/nnUNet_trained_models/uniseg-10t-bm/3d_fullres/Task094_10taskWithBraTS2023/UniSeg_Trainer__DoDNetPlans/fold_0/model_best.model"

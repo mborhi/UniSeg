@@ -13,6 +13,34 @@
 #    limitations under the License.
 import torch
 
+def load_pretrained_weights_lenient(network, fname):
+    saved_model = torch.load(fname)
+    original_state_dict = saved_model['state_dict']
+    adapted_state_dict = network.state_dict()
+
+    exclude_layers = ['seg_outputs']
+
+    for name, param in original_state_dict.items():
+        if any(excluded in name for excluded in exclude_layers):
+            print(f"Skipping loading weights for '{name}'")
+            continue 
+        if name in adapted_state_dict:
+            if param.size() == adapted_state_dict[name].size():
+                # exact match, load directly
+                adapted_state_dict[name].copy_(param)
+            else:
+                # mismatch in shape, handle selectively
+                min_shape = tuple(min(s1, s2) for s1, s2 in zip(param.size(), adapted_state_dict[name].size()))
+                slices = tuple(slice(0, ms) for ms in min_shape)
+
+                print(f"Loading partial weights for '{name}': {param.size()} -> {adapted_state_dict[name].size()}, slices: {slices}")
+                
+                # Copy matching subset of weights
+                adapted_state_dict[name][slices].copy_(param[slices])
+
+    # Load updated state dict into the adapted model
+    network.load_state_dict(adapted_state_dict)
+
 
 def load_pretrained_weights(network, fname, verbose=False):
     """
