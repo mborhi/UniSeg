@@ -896,7 +896,7 @@ class UniSegExtractor_DP(UniSeg_model):
 
 class TAPFeatureExtractor_DP(UniSeg_model):
 
-    def __init__(self, feature_space_dim, gmm_comps, num_classes, class_lst_to_std_mapping, task_id_class_lst_mapping, *args, with_wandb=False, ood_detection_mode=False, **kwargs):
+    def __init__(self, feature_space_dim, gmm_comps, num_classes, queue_size, class_lst_to_std_mapping, task_id_class_lst_mapping, *args, with_wandb=False, ood_detection_mode=False, **kwargs):
         super().__init__(*args, **kwargs)
 
         num_tasks = len(task_id_class_lst_mapping.keys())
@@ -915,7 +915,7 @@ class TAPFeatureExtractor_DP(UniSeg_model):
         self.gmm_comps = gmm_comps
         
         # self.do_ds = True
-
+        self.queue_size = queue_size
         self.queue_min = 1
         self.gmm_fitted = False
         self.feature_space_gmm = None
@@ -924,7 +924,7 @@ class TAPFeatureExtractor_DP(UniSeg_model):
         self.task_feature_space_gmm = [None for _ in range(num_tasks)]
         self.task_taps = nn.ModuleList([
             # TAP(feature_space_dim, num_classes, num_tasks, momentum=0.99, queue_size=10000, val_q_size=2500, gmm_comps=10) 
-            TAP(feature_space_dim, self.task_to_num_classes[tidx], num_tasks, momentum=0.99, queue_size=10000, val_q_size=2500, gmm_comps=self.gmm_comps) 
+            TAP(feature_space_dim, self.task_to_num_classes[tidx], num_tasks, momentum=0.99, queue_size=queue_size, val_q_size=2500, gmm_comps=self.gmm_comps) 
             for tidx in range(num_tasks)
         ])
         # self.task_taps = [
@@ -956,7 +956,7 @@ class TAPFeatureExtractor_DP(UniSeg_model):
             for tidx in range(num_tasks)
         ]
 
-        self.q_update_size = 25
+        self.q_update_size = 3
 
         self.ood_detection_mode = ood_detection_mode
 

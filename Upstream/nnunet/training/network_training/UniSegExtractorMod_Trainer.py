@@ -224,7 +224,8 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
         # num_components = len(self.class_lst_to_std_mapping.keys())
         self.network = TAPFeatureExtractor_DP(self.feature_space_dim, 
                                             self.gmm_comps,
-                                            self.num_classes,  
+                                            self.num_classes, 
+                                            self.queue_size, 
                                             # copy.deepcopy(self.class_lst_to_std_mapping), 
                                             copy.deepcopy(self.task_class), 
                                             copy.deepcopy(self.task_id_class_lst_mapping),
@@ -478,7 +479,8 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
             # self.loss = MultipleOutputLoss2(DC_and_CE_loss({'batch_dice': self.batch_dice, 'smooth': 1e-5, 'do_bg': False}, {}), self.ds_loss_weights)
             # self.loss = MixedDSLoss(main_loss=self.main_loss, ds_loss=self.ds_loss, dice_loss=dc_loss, weight_factors=self.ds_loss_weights)
             # apply_nonlin=None, alpha=None, gamma=2, balance_index=0, smooth=1e-5, size_average=True
-            self.sanity_loss = MultipleOutputLoss2(loss=DC_and_CE_loss({'batch_dice': self.batch_dice, 'smooth': 1e-5, 'do_bg': False}, {}), weight_factors=self.ds_loss_weights)
+            # self.sanity_loss = MultipleOutputLoss2(loss=DC_and_CE_loss({'batch_dice': self.batch_dice, 'smooth': 1e-5, 'do_bg': False}, {}), weight_factors=self.ds_loss_weights)
+            self.sanity_loss = MultipleOutputLoss2(loss=DC_and_CE_loss({'batch_dice': self.batch_dice, 'smooth': 1e-5, 'do_bg': True}, {}), weight_factors=self.ds_loss_weights)
             # self.sanity_loss = MultipleOutputLoss2(loss=Focal_and_DC_Loss({'batch_dice': self.batch_dice, 'smooth': 1e-5, 'do_bg': False}, {}), weight_factors=self.ds_loss_weights)
 
             # self.sanity_loss.loss.ignore_label = 3
@@ -747,7 +749,7 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
             # self.network.gaussian_mixtures[t].fit(task_queue)
             # momentum = 0.1 * (1 - (self.epoch / self.max_num_epochs))
             # momentum = 0.1 #* (1 - (self.epoch / self.max_num_epochs))
-            momentum = 0.05 #* (1 - (self.epoch / self.max_num_epochs))
+            momentum = 0.4 #* (1 - (self.epoch / self.max_num_epochs))
             # momentum = 0.4
             # mu_hat_t = torch.from_numpy(self.network.gaussian_mixtures[t].means_).cuda()
             # sig_hat_t = torch.from_numpy(self.network.gaussian_mixtures[t].covariances_).cuda()
@@ -865,14 +867,14 @@ class UniSegExtractorMod_Trainer(nnUNetTrainerV2):
 
         # self.tap_optimizer.zero_grad()
         # tap_momentum = 0.4
-        tap_momentum = 0.7
+        tap_momentum = 0.4
         # tap_momentum = 1 - np.power(self.epoch / self.max_num_epochs, 2)
         # tap_momentum = min(0.3 + (self.epoch / self.max_num_epochs), 0.45)
         self.tap_tasks_optimizer[task_idx].zero_grad()
         # ###
         task_tap_losses = []
         # ###
-        for e in range(15):
+        for e in range(30):
             # new_mus, new_covs = self.tap(self.mus, input_covs, input_tc_inds)
             # new_mus, new_covs = self.tap.forward_dedicated(self.mus, input_covs, input_tc_inds)
             # new_mus, new_covs = self.tap.forward_dedicated(self.mus, input_covs, input_tc_inds, with_update=True)
